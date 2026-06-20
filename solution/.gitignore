@@ -1,0 +1,5 @@
+# Generated, regenerable artefacts (run `python -m solution.run_pipeline`).
+outputs/
+# Python caches.
+__pycache__/
+*.pyc
