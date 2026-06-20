@@ -233,4 +233,6 @@ def evaluate_qh_price(price_qh: pd.Series) -> dict:
     }
     res["skill_vs_persistence_MAE"] = E.skill_score(
         res["model"]["MAE"], res["persistence"]["MAE"])
+    res["alpha"] = alpha
+    res["_test"] = (yte, pred, pers, seas)
     return res

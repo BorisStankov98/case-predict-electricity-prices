@@ -14,6 +14,36 @@ pip install -r requirements.txt          # or use an existing scientific-Python 
 python -m solution.run_pipeline          # run from the repo root
 ```
 
+### Run anywhere with Docker (recommended for reproducibility)
+
+No local Python needed — just Docker.
+
+```bash
+# Easiest: build + run in Docker, then open the HTML report on the host.
+./solution/run.sh
+```
+
+Or invoke the pieces yourself **from the repo root** (the build context must
+include `data/`):
+
+```bash
+# docker compose (builds + runs; writes outputs incl. report.html to the host)
+docker compose -f solution/docker-compose.yml up --build
+
+# ...or plain docker
+docker build -f solution/Dockerfile -t bg-forecast .
+docker run --rm -v "$(pwd)/solution/outputs:/app/solution/outputs" bg-forecast
+```
+
+The container runs the pipeline **and** builds `report.html` into the mounted
+`solution/outputs/` folder. A container cannot open a browser on your host, so
+either use `run.sh` (which opens it for you) or open
+`solution/outputs/report.html` yourself afterwards.
+
+The image pins exact dependency versions (`requirements.txt`) on
+`python:3.12-slim`, so the run is reproducible across machines. The seed data is
+copied into the image at build time, so the container is self-contained.
+
 Outputs are written to `solution/outputs/`:
 
 | File | What |

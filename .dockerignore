@@ -1,0 +1,8 @@
+# Keep the Docker build context small and deterministic.
+.git
+docs
+tools
+**/__pycache__
+**/*.pyc
+solution/outputs
+.DS_Store

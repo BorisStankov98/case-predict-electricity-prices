@@ -1,8 +1,9 @@
-# Minimal runtime for the forecasting pipeline.
-# Tested with the Anaconda Python 3.13 stack.
-pandas>=2.0
-numpy>=1.24
-scikit-learn>=1.3      # HistGradientBoostingRegressor (native NaN handling)
-matplotlib>=3.6
+# Pinned for reproducibility (the versions the pipeline was developed/tested on).
+# All ship as manylinux wheels for CPython 3.12, so `pip install` needs no
+# compiler inside the Docker image.
+pandas==2.3.3
+numpy==2.3.5
+scikit-learn==1.7.2
+matplotlib==3.10.6
 # Optional, not required (BG holidays are hard-coded for the data span):
 # holidays>=0.40

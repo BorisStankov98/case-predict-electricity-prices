@@ -1,0 +1,12 @@
+# Convenience wrapper. Run from the repo root:
+#   docker compose -f solution/docker-compose.yml up --build
+# Outputs appear on the host in solution/outputs/.
+services:
+  forecast:
+    build:
+      context: ..                      # repo root, so data/ is in the context
+      dockerfile: solution/Dockerfile
+    image: bg-forecast
+    volumes:
+      # Persist generated artefacts (dataset, metrics, figures) to the host.
+      - ../solution/outputs:/app/solution/outputs
