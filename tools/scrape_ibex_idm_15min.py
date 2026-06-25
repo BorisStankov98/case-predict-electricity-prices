@@ -102,12 +102,20 @@ def fetch_day(session: requests.Session, day: date, retries: int = 3) -> str | N
 
 def parse_qh_table(html: str, delivery_date: date) -> pd.DataFrame | None:
     """Pull the 15-minute (QH) table out of the page HTML."""
+    # IBEX prints numbers in European format ("132,65" = 132.65), so tell
+    # pandas the comma is the decimal mark and the dot the thousands group.
+    # Without this, read_html's default thousands="," turns 132,65 into 13265.
     try:
-        tables = pd.read_html(io.StringIO(html), attrs={"class": "idm-qh-table"})
+        tables = pd.read_html(
+            io.StringIO(html),
+            attrs={"class": "idm-qh-table"},
+            decimal=",",
+            thousands=".",
+        )
     except ValueError:
         # Fallback: any table whose first column has rows starting with "QH-"
         try:
-            all_tables = pd.read_html(io.StringIO(html))
+            all_tables = pd.read_html(io.StringIO(html), decimal=",", thousands=".")
         except ValueError:
             return None
         tables = [
@@ -167,9 +175,12 @@ def main() -> int:
     end = today - timedelta(days=1)
     start = end - timedelta(days=89)  # 90 days inclusive
 
-    if len(sys.argv) == 3:
-        start = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
-        end = datetime.strptime(sys.argv[2], "%Y-%m-%d").date()
+    do_upload = "--upload" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--upload"]
+
+    if len(args) == 2:
+        start = datetime.strptime(args[0], "%Y-%m-%d").date()
+        end = datetime.strptime(args[1], "%Y-%m-%d").date()
 
     df = scrape(start, end)
 
@@ -181,6 +192,10 @@ def main() -> int:
     df.to_csv(out, index=False)
     print(f"\n\u2713 Wrote {len(df):,} rows \u00d7 {df.shape[1]} cols \u2192 {out}")
     print(f"  columns: {list(df.columns)}")
+
+    if do_upload:
+        from upload_s3 import upload
+        upload(out)
     return 0
 
 

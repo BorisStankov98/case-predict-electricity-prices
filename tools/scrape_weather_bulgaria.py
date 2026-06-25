@@ -47,9 +47,25 @@ Usage
     python scrape_weather_bulgaria.py 2026-02-01 2026-05-09
 
 Outputs (all in ./weather_bg/):
-    weather_<city>.csv      one per city (Sofia, Plovdiv, Varna, Burgas, Ruse)
-    weather_bg_total.csv    country-average series
-    _summary.json           per-location row counts and date ranges
+    weather_<city>.csv             one per city — ERA5 actuals (+ recent
+                                   historical-forecast tail to fill the lag)
+    weather_bg_total.csv           country-average actuals
+    weather_<city>_forecast.csv    one per city — historical-forecast model
+                                   archive across the FULL window (look-ahead
+                                   safe feature: "what a forecast would show")
+    weather_bg_total_forecast.csv  country-average forecast
+    _summary.json                  actuals: per-location row counts / ranges
+    _summary_forecast.json         forecast: per-location row counts / ranges
+
+Actuals vs forecast
+-------------------
+The plain weather_<city>.csv files are ERA5 reanalysis — the *actual*
+weather. Using them as model features causes look-ahead bias, because at
+prediction time you only know the *forecast*. The *_forecast.csv files pull
+Open-Meteo's Historical Forecast archive over the whole window so you have a
+leakage-safe forecast feature. Note this archive is a rolling concatenation
+of recent model runs, not a strictly-defined D-1 forecast; it only reaches
+back to ~2022-01-01.
 """
 
 from __future__ import annotations
@@ -65,6 +81,9 @@ import requests
 
 ARCHIVE_URL  = "https://archive-api.open-meteo.com/v1/archive"
 FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
+
+# Open-Meteo's Historical Forecast archive does not reach earlier than this.
+FORECAST_ARCHIVE_START = date(2022, 1, 1)
 
 CITIES = {
     # name      (latitude, longitude)
@@ -160,6 +179,37 @@ def fetch_city(name: str, lat: float, lon: float,
     return out
 
 
+def fetch_city_forecast(name: str, lat: float, lon: float,
+                        start: date, end: date) -> pd.DataFrame | None:
+    """Fetch a city's full window from the Historical Forecast endpoint only.
+
+    Unlike fetch_city (which stitches ERA5 actuals + a recent forecast tail),
+    this pulls the model-forecast archive across the WHOLE window — the
+    leakage-safe feature. The archive only reaches back to ~2022-01-01, so we
+    clamp the start there.
+
+    A single multi-year request to this endpoint times out, so we fetch it in
+    yearly chunks and concatenate."""
+    f_start = max(start, FORECAST_ARCHIVE_START)
+    pieces: list[pd.DataFrame] = []
+    cur = f_start
+    while cur <= end:
+        chunk_end = min(date(cur.year, 12, 31), end)
+        print(f"  • {name}: forecast {cur} → {chunk_end}")
+        df = fetch(FORECAST_URL, lat, lon, cur, chunk_end)
+        if df is not None and not df.empty:
+            pieces.append(df)
+        time.sleep(0.3)  # be polite between chunks
+        cur = date(cur.year + 1, 1, 1)
+
+    if not pieces:
+        return None
+    out = pd.concat(pieces).sort_index()
+    out = out[~out.index.duplicated(keep="first")]
+    out["source"] = "historical_forecast"
+    return out
+
+
 def make_country_average(per_city: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Average each variable across cities (equal weighting). Wind-direction
     averaging via vector mean to avoid the 359°/1° wrap-around bug."""
@@ -241,9 +291,32 @@ def run(start: date, end: date) -> dict:
     avg = make_country_average(per_city)
     save("weather_bg_total", avg, summary)
 
+    # ---- Full-window FORECAST series (leakage-safe feature) ----
+    # The forecast outputs get their own summary file so the two scrapes
+    # (actuals vs forecast archive) can be tracked independently.
+    print("\nForecast (historical-forecast archive, full window)")
+    summary_fc: dict = {"window": {"start": str(start), "end": str(end)}}
+    per_city_fc: dict[str, pd.DataFrame] = {}
+    for city, (lat, lon) in CITIES.items():
+        df = fetch_city_forecast(city, lat, lon, start, end)
+        save(f"weather_{city}_forecast", df, summary_fc)
+        if df is not None and not df.empty:
+            per_city_fc[city] = df.drop(columns=["source"], errors="ignore")
+        time.sleep(0.5)  # be polite
+
+    print("\nCountry average (forecast)")
+    avg_fc = make_country_average(per_city_fc)
+    if not avg_fc.empty:
+        avg_fc["source"] = "city_average_forecast"
+    save("weather_bg_total_forecast", avg_fc, summary_fc)
+
     summary_path = OUT_DIR / "_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, default=str))
     print(f"\nSummary written to {summary_path}")
+
+    summary_fc_path = OUT_DIR / "_summary_forecast.json"
+    summary_fc_path.write_text(json.dumps(summary_fc, indent=2, default=str))
+    print(f"Forecast summary written to {summary_fc_path}")
     return summary
 
 
@@ -252,14 +325,21 @@ def main() -> int:
     start = date(2026, 2, 1)
     end = today
 
-    if len(sys.argv) == 3:
-        start = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
-        end = datetime.strptime(sys.argv[2], "%Y-%m-%d").date()
-    elif len(sys.argv) not in (1, 3):
-        sys.exit("Usage: python scrape_weather_bulgaria.py [START END]\n"
+    do_upload = "--upload" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--upload"]
+
+    if len(args) == 2:
+        start = datetime.strptime(args[0], "%Y-%m-%d").date()
+        end = datetime.strptime(args[1], "%Y-%m-%d").date()
+    elif len(args) not in (0, 2):
+        sys.exit("Usage: python scrape_weather_bulgaria.py [START END] [--upload]\n"
                  "       (dates as YYYY-MM-DD; default = 2026-02-01 → today)")
 
     summary = run(start, end)
+
+    if do_upload:
+        from upload_s3 import upload
+        upload(OUT_DIR)
 
     ok = sum(1 for k, v in summary.items()
              if isinstance(v, dict) and v.get("ok"))

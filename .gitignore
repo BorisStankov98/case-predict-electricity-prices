@@ -1,0 +1,19 @@
+# Secrets — never commit credentials
+.env
+.env.*
+!.env.example
+.aws/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/

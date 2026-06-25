@@ -1,0 +1,28 @@
+# Python dependencies for the Bulgaria electricity-data scrapers (tools/).
+#
+# Install:   pip install -r requirements.txt   (run from the project root)
+#
+# Per-device setup is then just: clone repo -> this install -> provide AWS
+# credentials (~/.aws/credentials or AWS_* env vars) + S3_BUCKET, then run a
+# scraper with --upload.
+
+# --- core: used by all/most scrapers ---
+pandas
+numpy
+requests
+
+# --- S3 upload (tools/upload_s3.py, the --upload flag) ---
+boto3
+
+# --- ENTSO-E scraper ---
+entsoe-py            # imported as `entsoe`
+
+# --- days-off calendar scraper ---
+holidays
+
+# --- IBEX 15-min scraper ---
+# Heavyweight: Playwright also needs a one-time browser download:
+#     playwright install chromium
+# Only the IBEX scraper imports these; skip if you don't run it.
+playwright
+lxml                 # pandas.read_html parser backend

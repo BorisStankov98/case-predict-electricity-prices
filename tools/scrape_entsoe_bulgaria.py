@@ -17,6 +17,7 @@ Load
   * Day-ahead load forecast
 Generation
   * Actual Generation per Production Type
+  * Installed Generation Capacity per Production Type (yearly nameplate MW)
   * Generation Forecast — day-ahead
   * Wind & solar forecast
 Imbalance
@@ -60,6 +61,7 @@ Outputs (all in ./entsoe_bg/):
   load_actual.csv
   load_forecast_day_ahead.csv
   generation_per_type.csv
+  installed_capacity_per_type.csv   (yearly, one row per year)
   generation_forecast_day_ahead.csv
   wind_solar_forecast.csv
   imbalance_prices.csv             (if available)
@@ -94,6 +96,11 @@ except ImportError:
 BG = "BG"
 TZ = "Europe/Sofia"
 NEIGHBOURS = ["RO", "GR", "RS", "MK", "TR"]
+
+# Hardcoded ENTSO-E API key. Paste your token between the quotes below.
+# NOTE: this file is tracked by git — if you commit/push it, the key is
+# exposed. Falls back to the ENTSOE_API_KEY env var when left blank.
+ENTSOE_API_KEY = "b90aba93-81f7-4458-be2b-36cbe599bd95"
 
 # Bulgaria 15-minute MTU intraday go-live (per ENTSO-E SIDC announcements).
 # Earlier dates may still return hourly data; we let the API decide.
@@ -193,9 +200,10 @@ def save(name: str, df: pd.DataFrame | None, summary: dict) -> None:
 # ---------- main scrape ----------
 
 def run(start: date, end: date) -> dict:
-    api_key = os.environ.get("ENTSOE_API_KEY")
+    api_key = ENTSOE_API_KEY or os.environ.get("ENTSOE_API_KEY")
     if not api_key:
-        sys.exit("Set ENTSOE_API_KEY in your environment first.")
+        sys.exit("Set ENTSOE_API_KEY (hardcode it at the top of this file "
+                 "or export it in your environment) first.")
     client = EntsoePandasClient(api_key=api_key)
 
     print(f"Bulgaria (BG) on ENTSO-E,  {start}  →  {end}")
@@ -247,6 +255,15 @@ def run(start: date, end: date) -> dict:
                        client.query_generation, start, end,
                        country_code=BG, psr_type=None)
     save("generation_per_type", df, summary)
+
+    # Installed (nameplate) capacity per production type. Published once a
+    # year, so the output is one row per year with the same fuel-type columns
+    # as generation_per_type — join on year to get a utilisation / capacity
+    # factor (actual generation ÷ installed capacity) downstream.
+    df = fetch_chunked("installed_capacity_per_type",
+                       client.query_installed_generation_capacity, start, end,
+                       country_code=BG, psr_type=None)
+    save("installed_capacity_per_type", df, summary)
 
     df = fetch_chunked("generation_forecast_day_ahead",
                        client.query_generation_forecast, start, end,
@@ -339,14 +356,21 @@ def main() -> int:
     start = DEFAULT_START
     end = today
 
-    if len(sys.argv) == 3:
-        start = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
-        end = datetime.strptime(sys.argv[2], "%Y-%m-%d").date()
-    elif len(sys.argv) not in (1, 3):
-        sys.exit("Usage: python scrape_entsoe_bulgaria.py [START END]\n"
+    do_upload = "--upload" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--upload"]
+
+    if len(args) == 2:
+        start = datetime.strptime(args[0], "%Y-%m-%d").date()
+        end = datetime.strptime(args[1], "%Y-%m-%d").date()
+    elif len(args) not in (0, 2):
+        sys.exit("Usage: python scrape_entsoe_bulgaria.py [START END] [--upload]\n"
                  "       (dates as YYYY-MM-DD; default = 2022-09-30 → today)")
 
     summary = run(start, end)
+
+    if do_upload:
+        from upload_s3 import upload
+        upload(OUT_DIR)
 
     ok = [k for k, v in summary.items()
           if isinstance(v, dict) and v.get("ok")]
