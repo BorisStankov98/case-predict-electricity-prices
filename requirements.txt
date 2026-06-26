@@ -26,3 +26,11 @@ holidays
 # Only the IBEX scraper imports these; skip if you don't run it.
 playwright
 lxml                 # pandas.read_html parser backend
+
+# --- feature builders + model builders (tools/features/, model/) ---
+# The transform/feature/model stages; not needed for scraping alone.
+matplotlib           # result figures (PNG)
+scikit-learn         # imported as `sklearn` — Ridge/Lasso/ElasticNet
+statsmodels          # OLS/HAC, ADF/KPSS, Ljung-Box, ARCH diagnostics
+scipy                # stats used in the 1-week diagnostics/intervals
+xgboost              # XGBRegressor

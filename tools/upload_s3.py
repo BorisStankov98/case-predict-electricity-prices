@@ -188,7 +188,36 @@ def read_csv(key: str, **kwargs):
     """
     import io
     import pandas as pd
+    return pd.read_csv(io.BytesIO(read_bytes(key)), **kwargs)
+
+
+def list_keys(prefix: str, suffix: str | None = None) -> list[str]:
+    """Return every object key under `prefix` (optionally filtered by suffix).
+
+    Paginates so it isn't capped at 1000 objects. Useful for collecting all of
+    a stage's outputs, e.g. list_keys("data/results/", ".png").
+    """
+    s3 = _require_client()
+    bucket = os.environ["S3_BUCKET"]
+    keys, token = [], None
+    while True:
+        kw = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            kw["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kw)
+        for o in resp.get("Contents", []):
+            if suffix is None or o["Key"].endswith(suffix):
+                keys.append(o["Key"])
+        if resp.get("IsTruncated"):
+            token = resp.get("NextContinuationToken")
+        else:
+            break
+    return keys
+
+
+def read_bytes(key: str) -> bytes:
+    """Download an object's raw bytes from S3 (any file type, no local copy)."""
     s3 = _require_client()
     bucket = os.environ["S3_BUCKET"]
     obj = s3.get_object(Bucket=bucket, Key=key)
-    return pd.read_csv(io.BytesIO(obj["Body"].read()), **kwargs)
+    return obj["Body"].read()

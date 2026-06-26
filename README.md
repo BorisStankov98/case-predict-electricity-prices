@@ -1,246 +1,189 @@
-# Case: Forecasting Electricity Demand, Supply, and Price in Bulgaria
+# Bulgarian Electricity Data Pipeline
 
-> A multi-layered modelling case on Bulgaria's electricity system. Predict
-> what people will consume, what producers will generate, and at what
-> price the market will clear — at multiple time horizons.
+> Our solution for the Bulgarian electricity forecasting case: the data
+> pipeline that scrapes, stores, cleans, and joins every input the
+> forecasting models need. For the conceptual background and market
+> terminology, see [`docs/`](docs/) (start with
+> [docs/concepts.md](docs/concepts.md) and [docs/scope.md](docs/scope.md)).
 
-This repository **defines the case**. It is read-only: the problem
-statement, conceptual background, suggested approach, provided data,
-and provided tooling. Your team's work — code, processed data,
-intermediate results, final outputs — lives in **your own
-repositories**, not here.
+This repo is organised around a simple idea: **S3 is the single source of
+truth.** Scrapers pull raw data from the public sources and push it to
+S3 (`data/raw/`). Transforms read those raw files back from S3, build a
+canonical hourly modelling dataset, and push it to S3
+(`data/processed/`). No local file is authoritative — anyone with the
+credentials can reproduce the dataset from scratch.
 
 ---
 
 ## Repository structure
 
 ```
-case-bulgarian-electricity-forecasting/
-├── README.md                      ← you are here: the case definition
-├── LICENSE                        ← MIT
+case-predict-electricity-prices/
+├── README.md                       ← you are here: the pipeline
+├── requirements.txt                ← Python dependencies
+├── LICENSE                         ← MIT
 │
-├── docs/                          ← detailed case documentation
-│   ├── concepts.md                ← electricity-market concepts & terminology
-│   ├── data.md                    ← data sources, access, and gotchas
-│   ├── methods.md                 ← suggested modelling approaches per layer
-│   ├── practices.md               ← best practices (workflow, evaluation, teamwork)
-│   └── scope.md                   ← what's required, what's open, optional directions
+├── docs/                           ← case documentation (concepts, data, scope…)
 │
-├── tools/                         ← provided, working scrapers
-│   ├── README.md                  ← how to run each scraper
-│   ├── scrape_ibex_idm_15min.py   ← IBEX continuous-intraday QH prices & volumes
-│   ├── scrape_entsoe_bulgaria.py  ← ENTSO-E: prices, load, generation, cross-border, outages
-│   └── scrape_weather_bulgaria.py ← Open-Meteo hourly weather, 5 cities + country average
+├── tools/                          ← the pipeline
+│   ├── upload_s3.py                ← shared S3 helper (upload + read-back)
+│   │
+│   ├── scrapers/                   ← STAGE 1: raw sources → S3 data/raw/
+│   │   ├── run_all.py              ← run every scraper in sequence
+│   │   ├── scrape_entsoe_bulgaria.py       ← ENTSO-E: prices, load, generation,
+│   │   │                                     cross-border, outages, capacity
+│   │   ├── scrape_weather_bulgaria.py      ← Open-Meteo weather, 5 cities + avg
+│   │   ├── scrape_forecast.py              ← tomorrow's live weather forecast
+│   │   ├── scrape_1day_ahead_forecast.py   ← fixed 24h-lead forecast archive
+│   │   ├── scrape_historical_forecast.py   ← best-available forecast archive
+│   │   ├── scrape_ibex_idm_15min.py        ← IBEX intraday 15-min prices/volumes
+│   │   └── scrape_days_off_bulgaria.py     ← weekends + public holidays calendar
+│   │
+│   └── clean-and-transform/        ← STAGE 2: S3 data/raw/ → S3 data/processed/
+│       ├── run_all.py              ← run every transform in sequence
+│       ├── timezone_convertor.py             ← builds the hourly master dataset
+│       └── transform_derive_available_capacity.py  ← available capacity per fuel
 │
-└── data/                          ← provided seed data (snapshots from the sources)
-    ├── README.md                  ← what each file is + source quick-reference
-    ├── ibex/                      ← IBEX intraday 15-minute prices & volumes
-    ├── entsoe/                    ← ENTSO-E datasets for Bulgaria (one CSV per dataset)
-    └── weather/                   ← hourly weather per city + country average
+└── data/                           ← provided seed data (snapshots, go stale)
 ```
 
-The seed data in `data/` lets you start modelling on day one. It is a
-snapshot — it goes stale. Refresh from the live sources with the
-provided scrapers early in your work (see `tools/README.md`; note that
-the ENTSO-E scraper needs a free API token that takes a few working
-days to obtain, so request it immediately).
-
 ---
 
-## What you're solving
-
-Electricity is unusual: it can't be stored at scale, it must be produced
-and consumed simultaneously, and the price for each delivery period is
-set by a market mechanism that balances forecasted supply against
-forecasted demand. When forecasts are wrong, prices spike, plants
-ramp inefficiently, or the system operator has to intervene.
-
-Your task is to build models that anticipate, for the Bulgarian power
-system:
-
-1. how much electricity **will be consumed**,
-2. how much **will be supplied**,
-3. and at what **price** it will trade on the Bulgarian Independent
-   Energy Exchange (IBEX),
-
-at three horizons: **15 minutes ahead**, **24 hours ahead**, and
-**1 week ahead**.
-
-The case is **layered**: each layer is a complete problem in itself,
-and each subsequent layer uses the output of the previous one. Strong
-teams reach the higher layers; struggling teams still deliver something
-meaningful at the lower ones.
-
----
-
-## The three layers
-
-### Layer 1 — Consumption forecasting
-
-Build a multi-factor model that predicts Bulgarian electricity
-consumption at the three horizons. Use, at minimum:
-
-- **historical consumption** (load) time series,
-- **weather data** (temperature drives heating and cooling; humidity
-  matters; daylight matters),
-- **calendar features** (hour-of-day, day-of-week, holidays, seasons),
-- **cross-border physical flows** (Bulgaria's electricity exchange
-  with its neighbours),
-
-and any other data sources the team finds relevant — outage
-notifications, special events, economic indicators, anything the team
-can defend as causally connected.
-
-### Layer 2 — Supply forecasting
-
-Build a multi-factor model that predicts Bulgarian electricity
-generation (total, and ideally split by production type) at the same
-horizons. Use, at minimum:
-
-- **historical generation per production type**,
-- **weather** (wind speed and solar irradiance directly drive
-  renewable generation),
-- **unavailability of generation units** (planned and forced outages
-  reduce available capacity),
-- **cross-border flows**,
-
-and other data the team finds relevant.
-
-### Layer 3 — Price forecasting
-
-Using the consumption forecast, the supply forecast, and historical
-prices, predict the IBEX price at 15 minutes, 24 hours, and 1 week
-ahead. This is the deepest layer: it is built on top of the outputs of
-Layers 1 and 2 and depends on them, but you can also feed it any
-feature you find useful — fuel prices, neighbour-country prices,
-day-ahead prices, outages, anything you can argue for.
-
----
-
-## How the layers connect (and why this order)
-
-Electricity prices are determined by where the supply curve meets the
-demand curve at the moment of clearing. If you can forecast both
-curves' positions, you can forecast the clearing price. This is the
-economic intuition behind the layering — it mirrors how electricity
-markets actually function:
+## The data pipeline
 
 ```
-   Layer 1: D̂(t+h)  ─┐
-                      ├──► Layer 3: P̂(t+h)
-   Layer 2: Ŝ(t+h)  ─┘
-                  ▲
-                  │
-   Historical prices, fuel prices, neighbour prices,
-   outages, other contextual features
+  Public sources              STAGE 1: scrape           STAGE 2: transform
+  ──────────────              ───────────────           ──────────────────
+  ENTSO-E  ┐
+  Open-Meteo├─►  tools/scrapers/*  ──►  s3://…/data/raw/  ──►  tools/clean-and-transform/*  ──►  s3://…/data/processed/
+  IBEX     │         (--upload)                                      (--upload)                   master_hourly_*.csv
+  holidays ┘                                                                                       (model-ready)
 ```
 
-Layer 3 doesn't have to use Layers 1 and 2 as the only inputs — but it
-must use *something* from them, otherwise you've collapsed the case
-into a single-layer pure-price model and lost the conceptual point.
+Both stages follow the same conventions:
+
+- **`--upload`** — every script writes its output locally; pass `--upload`
+  to also push it to S3. Without it, the script is a pure local run.
+- **`run_all.py`** — an optional orchestrator per stage. It runs each
+  script as its own subprocess, so one failure (missing API key, network
+  blip, missing input) is logged and skipped rather than aborting the
+  batch. It forwards any arguments to every step (so
+  `run_all.py --upload` uploads everything) and exits with the number of
+  failed steps.
+
+Each script also runs perfectly well on its own — `run_all.py` is just a
+convenience wrapper.
 
 ---
 
-## Read these next
+## Quickstart
 
-This README gives the framing. The detailed material is split across
-several documents so you can dive into what's relevant when:
+```bash
+# 1. Install dependencies (from the project root)
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+playwright install chromium          # only needed for the IBEX scraper
 
-- **[docs/concepts.md](docs/concepts.md)** — concepts and terminology
-  (intraday market, day-ahead market, MTU, IDA, SIDC, SDAC, NTC, load
-  vs. generation vs. net position, what "15-minute resolution" means
-  in this context). Read this first if anything in the layers above
-  felt unfamiliar.
+# 2. Configure S3 + AWS credentials (see "Configuration" below)
+export AWS_ACCESS_KEY_ID=...   AWS_SECRET_ACCESS_KEY=...   AWS_DEFAULT_REGION=eu-central-1
+export S3_BUCKET=your-bucket-name
 
-- **[docs/data.md](docs/data.md)** — where the data lives, what's free
-  vs. paid, what's lagged, what the gotchas are.
+# 3. Set the ENTSO-E token (free; takes a few working days to obtain)
+export ENTSOE_API_KEY=your-token-here
 
-- **[docs/methods.md](docs/methods.md)** — suggested modelling
-  approaches per layer, with notes on what works, what's a sensible
-  baseline, and what the literature says about realistic performance.
+# 4. STAGE 1 — scrape everything to S3 data/raw/
+python tools/scrapers/run_all.py --upload
 
-- **[docs/practices.md](docs/practices.md)** — best practices for
-  time-series forecasting, evaluation, reproducibility, and team
-  workflow. Suggestions, not commandments.
+# 5. STAGE 2 — build the canonical dataset to S3 data/processed/
+python tools/clean-and-transform/run_all.py --upload
+```
 
-- **[docs/scope.md](docs/scope.md)** — what's in scope, what's out of
-  scope, what the team is free to redefine, and an explicit list of
-  optional directions for teams that finish the three layers and want
-  to keep going.
-
-- **[tools/README.md](tools/README.md)** — how to install dependencies
-  and run each of the three provided scrapers.
-
-- **[data/README.md](data/README.md)** — what's in the provided seed
-  data, plus a quick-reference card of all sources, bidding-zone codes,
-  and production-type codes.
+Drop `--upload` at any step to run locally without touching S3.
 
 ---
 
-## What's provided
+## Stage 1 — Scrapers (`tools/scrapers/`)
 
-- **This case description** — the README and `docs/`.
-- **Seed data** in `data/` — snapshots of the three primary sources
-  (IBEX intraday prices, ENTSO-E datasets for Bulgaria, hourly weather),
-  so you can start modelling immediately without waiting for API access.
-- **Working scrapers** in `tools/` — to refresh the seed data and to
-  extend it (longer windows, more variables, neighbour countries).
+Each scraper takes an optional `[START END]` window (dates `YYYY-MM-DD`)
+and an optional `--upload` flag. Output lands in a folder/file next to the
+script, and (with `--upload`) under `data/raw/` in S3.
 
-The scrapers are starting points, not finished products. You will
-extend them, add data sources we haven't thought of, fix things, and
-combine the outputs into your own working datasets.
-
-## What's NOT provided
-
-- A canonical modelling dataset. You build it from the raw pieces.
-- A target metric. You choose, justify, and report it.
-- A reference solution. There isn't one "right answer".
-- A roadmap, calendar, or checkpoint schedule. You organise your own
-  work.
+| Script | Source | What it collects |
+| --- | --- | --- |
+| **`scrape_entsoe_bulgaria.py`** | ENTSO-E (needs `ENTSOE_API_KEY`) | The big one. Day-ahead + intraday (IDA1/2/3) prices, actual/forecast load, generation per type, installed capacity, generation & wind/solar forecasts, imbalance, cross-border flows/schedules/transfer-capacity with 5 neighbours, and unit outages. Long ranges are split into yearly chunks. Writes `entsoe_bg/*.csv` + `_summary.json`. |
+| **`scrape_weather_bulgaria.py`** | Open-Meteo (no key) | Hourly weather for 5 cities + a country average. Stitches ERA5 actuals with a forecast tail to cover ERA5's ~5-day lag, plus a separate leakage-safe forecast series. |
+| **`scrape_forecast.py`** | Open-Meteo | **Tomorrow's** hourly forecast (9 weather vars), UTC, country centroid. |
+| **`scrape_1day_ahead_forecast.py`** | Open-Meteo Previous-Runs API | Fixed **24h-lead** forecast archive (what was predicted exactly a day before each timestamp) from 2024-02-17. The leakage-safe weather feature the master dataset uses. |
+| **`scrape_historical_forecast.py`** | Open-Meteo Historical-Forecast API | Best-available archived forecasts (the runs models actually issued) from 2022-01-01. |
+| **`scrape_ibex_idm_15min.py`** | ibex.bg (Playwright + requests) | IBEX intraday 15-min (QH) prices & volumes. Clears a JS anti-bot challenge with headless Chromium once, then reuses the cookie. Limited to a rolling ~3 months by IBEX. |
+| **`scrape_days_off_bulgaria.py`** | `holidays` library | One row per day-off (weekends + public holidays incl. Orthodox Easter & substitute days). |
 
 ---
 
-## Suggested team composition
+## Stage 2 — Clean & transform (`tools/clean-and-transform/`)
 
-Five people. One reasonable split — you are free to organise
-differently if your team has different strengths:
+These read raw inputs **back from S3** (`data/raw/`), build canonical
+outputs, and (with `--upload`) push them to `data/processed/`. Order
+matters — see `run_all.py`'s `STEPS`.
 
-| Role | Focus |
+| Script | What it builds |
 | --- | --- |
-| **Data engineer** | Extending the scrapers, building the joined dataset, handling timezones, missing data, schema drift |
-| **Consumption modeller** | Layer 1 — the demand model and its features |
-| **Supply modeller** | Layer 2 — the generation model and its features |
-| **Price modeller / integrator** | Layer 3 — the price model, plus integrating Layers 1 and 2 into it |
-| **Methodologist / presenter** | Evaluation design, baselines, validation strategy, final write-up and presentation |
+| **`timezone_convertor.py`** | The **master dataset**. Joins load actual + ESO load forecast (ENTSO-E), the 1-day-ahead forecasted weather, and the days-off calendar; canonicalises everything in UTC; builds an hourly grid from 2024-02-17; flags `is_day_off` by **local** date; trims to where real load exists; converts to local BG time (`Europe/Sofia`). Output: `master_hourly_long_forecasted_weather.csv`. |
+| **`transform_derive_available_capacity.py`** | Hourly **available** generation capacity per fuel type — since ENTSO-E only publishes nameplate capacity yearly. `available = nameplate(year) − Σ outage MW lost`, joined 1:1 onto the generation timeline. |
 
-Roles can blur. The "methodologist" should be involved from day one,
-not just at the end — designing the evaluation protocol *before* the
-modellers start tuning is what separates a defensible result from a
-suspicious one.
+### The master dataset
+
+`data/processed/master_hourly_long_forecasted_weather.csv` is the
+model-ready table. One row per hour in local BG time, columns:
+
+- `load_actual_mw`, `load_forecast_mw` (ENTSO-E / ESO)
+- forecasted weather for hour *T*: `temp_c`, `wind10_ms`, `wind100_ms`,
+  `wind_dir_100m_deg`, `ghi_wm2`, `dni_wm2`, `cloud_pct`, `precip_mm`,
+  `rh_pct`
+- `is_day_off`
+
+The weather is a **day-ahead forecast** (not actuals, not lagged), so
+using it as a feature does not leak future information.
 
 ---
 
-## A note on realistic expectations
+## Configuration
 
-Electricity-price forecasting at 15-minute resolution is genuinely
-hard. Persistence — predicting "the next 15 minutes will look like the
-last 15 minutes" — is a stubborn baseline that even sophisticated
-models often fail to beat by much. This is not a flaw in the case; it
-is the reality of the problem. **A team that delivers Layers 1 and 2
-well, with a credible attempt at Layer 3 and an honest discussion of
-where it succeeded and where it didn't, has done good work.** A team
-that claims to have solved Layer 3 with stellar metrics has almost
-certainly leaked information from the future into their evaluation.
+`tools/upload_s3.py` handles all S3 I/O via the standard AWS credential
+chain (env vars, `~/.aws/credentials`, or an IAM role) — no browser flow,
+nothing to refresh. Per-device setup is just: clone, install, set these
+env vars.
 
-See `docs/practices.md` for how to avoid that mistake.
+| Variable | Purpose |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | AWS credentials (required) |
+| `AWS_DEFAULT_REGION` | e.g. `eu-central-1` (required for AWS) |
+| `S3_BUCKET` | Target bucket (required for `--upload` and the transforms) |
+| `S3_PREFIX` | Key prefix; default `data/raw` |
+| `S3_ENDPOINT_URL` | Only for R2/B2/MinIO; omit for AWS S3 |
+| `S3_DELETE_LOCAL` | `1`/`true`/`yes` → delete the local copy after a successful upload |
+| `ENTSOE_API_KEY` | ENTSO-E token (only the ENTSO-E scraper needs it) |
+
+If boto3 isn't installed or `S3_BUCKET` isn't set, `--upload` is a
+graceful no-op (warns, doesn't crash) so scrapers still work offline.
+
+---
+
+## What the pipeline feeds
+
+The dataset above feeds the three forecasting layers the case asks for —
+**consumption** (Layer 1), **supply** (Layer 2), and **price** (Layer 3),
+each at 15-minute, 24-hour, and 1-week horizons. The conceptual framing
+and required deliverables live in the docs:
+
+- **[docs/concepts.md](docs/concepts.md)** — market concepts and terminology.
+- **[docs/data.md](docs/data.md)** — data sources, access, lags, gotchas.
+- **[docs/practices.md](docs/practices.md)** — evaluation, reproducibility,
+  avoiding look-ahead leakage.
+- **[docs/scope.md](docs/scope.md)** — required deliverables and optional directions.
 
 ---
 
 ## Licence
 
-This case description, the provided tools, and the provided seed data
-are released under the **MIT License** ([LICENSE](LICENSE)). You are
-free to use, adapt, and republish them.
-
-Your own work, in your own repositories, is yours to license as you
-wish.
+MIT ([LICENSE](LICENSE)).

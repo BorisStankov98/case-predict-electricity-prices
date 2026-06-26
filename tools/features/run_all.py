@@ -1,20 +1,21 @@
 """
-Run every clean/transform step in one go (the transform stage).
+Run every feature builder in one go (the feature stage).
 
-Counterpart to tools/scrapers/run_all.py. Run this after the scrapers have
-populated S3 (or local data). Each transform still runs on its own too, e.g.
-`python tools/clean-and-transform/transform_derive_available_capacity.py --upload`.
+Counterpart to tools/scrapers/run_all.py and tools/clean-and-transform/run_all.py.
+Run this after the transform stage has populated data/processed/ in S3 with the
+masters. Each builder still runs on its own too, e.g.
+`python tools/features/feature_builder_1d.py --upload`.
 
 Any arguments you pass are forwarded to each step, so:
 
-    python tools/clean-and-transform/run_all.py            # run all, local only
-    python tools/clean-and-transform/run_all.py --upload   # + push to data/processed
+    python tools/features/run_all.py            # run all, local only
+    python tools/features/run_all.py --upload   # + push features to data/processed
 
-Each step runs as its own subprocess, so one failure (missing input, a bad
+Each step runs as its own subprocess, so one failure (missing master, a bad
 row) is logged and skipped rather than aborting the whole batch. A summary is
 printed at the end; the exit code is the number of failed steps (0 = all good).
 
-Edit STEPS below to add/remove/reorder transforms.
+Edit STEPS below to add/remove/reorder feature builders.
 """
 
 from __future__ import annotations
@@ -26,17 +27,12 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 
-# Ordered list of transform scripts to run (all live in this folder).
-# Order matters when one transform consumes another's output.
-# Each reads raw from S3 (data/raw/) and uploads its master to data/processed/.
+# Ordered list of feature builders to run (all live in this folder).
 STEPS = [
-    "transform_1_day_forecast_local_time.py",    # day-ahead (24h) master (forecast wx)
-    "transform_1_week_forecast_local_time.py",   # week-ahead (168h) master (actual wx)
-    "transform_derive_available_capacity.py",    # needs ENTSO-E data in data/raw
+    "feature_builder_1d.py",     # day-ahead (24h) features ← master_hourly_long_forecasted_weather
+    "feature_builder_1w.py",     # week-ahead (168h) features ← master_1week_long
+    "feature_builder_15min.py",  # 1h-ahead nowcast features ← same 1-day master (no separate transform)
 ]
-# Note: transform_1_day_forecast_local_time.py supersedes the older
-# timezone_convertor.py (same day-ahead master); the old script is kept on disk
-# but no longer run from here.
 
 
 def run_step(script: str, passthrough: list[str]) -> tuple[str, int, float]:
@@ -68,7 +64,7 @@ def main() -> int:
         status = "✓ ok" if rc == 0 else ("⚠ missing" if rc == -1 else f"✗ rc={rc}")
         if rc != 0:
             failures += 1
-        print(f"  {status:<12} {name:<46} {secs:6.1f}s")
+        print(f"  {status:<12} {name:<42} {secs:6.1f}s")
     print(f"\n{len(results) - failures}/{len(results)} steps succeeded.")
     return failures
 

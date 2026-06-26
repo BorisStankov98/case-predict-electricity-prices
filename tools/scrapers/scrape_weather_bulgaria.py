@@ -1,7 +1,7 @@
 """
 Open-Meteo weather scraper for Bulgaria.
 
-Pulls hourly weather data from 2026-02-01 onwards for:
+Pulls hourly weather data from 2022-01-01 onwards (override with START END) for:
   - Five major cities: Sofia, Plovdiv, Varna, Burgas, Ruse
   - A "country average" series (mean of the five city series, weighted
     equally; close enough to a population-weighted average for energy
@@ -42,7 +42,7 @@ Setup
 Usage
 -----
     python scrape_weather_bulgaria.py
-        # default window: 2026-02-01 → today
+        # default window: 2022-01-01 → today
 
     python scrape_weather_bulgaria.py 2026-02-01 2026-05-09
 
@@ -322,7 +322,7 @@ def run(start: date, end: date) -> dict:
 
 def main() -> int:
     today = date.today()
-    start = date(2026, 2, 1)
+    start = date(2022, 1, 1)        # default: full history (matches the forecast archive floor)
     end = today
 
     do_upload = "--upload" in sys.argv
@@ -333,7 +333,7 @@ def main() -> int:
         end = datetime.strptime(args[1], "%Y-%m-%d").date()
     elif len(args) not in (0, 2):
         sys.exit("Usage: python scrape_weather_bulgaria.py [START END] [--upload]\n"
-                 "       (dates as YYYY-MM-DD; default = 2026-02-01 → today)")
+                 "       (dates as YYYY-MM-DD; default = 2022-01-01 → today)")
 
     summary = run(start, end)
 
