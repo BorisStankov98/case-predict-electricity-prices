@@ -56,7 +56,8 @@ def _client():
     return boto3.client("s3", endpoint_url=endpoint)
 
 
-def upload(local_path: str | Path, prefix: str | None = None) -> bool:
+def upload(local_path: str | Path, prefix: str | None = None,
+           cleanup: bool | None = None) -> bool:
     """Upload a file or folder to S3 under a key prefix.
 
     A folder is mirrored into a same-named key prefix; a single file lands at
@@ -67,6 +68,10 @@ def upload(local_path: str | Path, prefix: str | None = None) -> bool:
         "data/raw" if unset (raw scraper output). The transform/processing
         pipeline should pass prefix="data/processed" to keep processed data
         separate, e.g.  upload(out_csv, prefix="data/processed").
+    cleanup:
+        If True, delete the local file/folder after a successful upload so S3
+        stays the only copy. Defaults to the S3_DELETE_LOCAL env var
+        ("1"/"true"/"yes" → on); set that to keep no local outputs around.
     """
     s3 = _client()
     if s3 is None:
@@ -93,6 +98,16 @@ def upload(local_path: str | Path, prefix: str | None = None) -> bool:
         s3.upload_file(str(local), bucket, key)
         print(f"  ↑ uploaded {local.name} → s3://{bucket}/{key}")
 
+    if cleanup is None:
+        cleanup = os.environ.get("S3_DELETE_LOCAL", "").lower() in ("1", "true", "yes")
+    if cleanup:
+        import shutil
+        if local.is_dir():
+            shutil.rmtree(local, ignore_errors=True)
+        else:
+            local.unlink(missing_ok=True)
+        print(f"  🗑  removed local {local.name} (S3 is the only copy)")
+
     return True
 
 
@@ -107,3 +122,73 @@ def upload_processed(local_path: str | Path) -> bool:
     Use this from the data-transform pipeline so processed data lands under
     data/processed/ instead of data/raw/."""
     return upload(local_path, prefix="data/processed")
+
+
+# ---------- reading back from S3 (for the transform stage) ----------
+
+def _require_client():
+    s3 = _client()
+    if s3 is None:
+        raise RuntimeError(
+            "S3 not configured — set S3_BUCKET (and AWS credentials) and "
+            "install boto3 to read inputs from S3.")
+    return s3
+
+
+def latest_key(prefix: str) -> str | None:
+    """Return the key of the most recently modified object under `prefix`.
+
+    Useful for scraper outputs whose filename embeds a date, e.g.
+    latest_key("data/raw/days_off_bg_") -> "data/raw/days_off_bg_2022-01-01_..."
+    Returns None if nothing matches.
+    """
+    s3 = _require_client()
+    bucket = os.environ["S3_BUCKET"]
+    objs = s3.list_objects_v2(Bucket=bucket, Prefix=prefix).get("Contents", [])
+    if not objs:
+        return None
+    return max(objs, key=lambda o: o["LastModified"])["Key"]
+
+
+def find_key(name_contains: str, prefix: str = "data/raw/",
+             suffix: str = ".csv") -> str | None:
+    """Newest object under `prefix` whose key contains `name_contains`.
+
+    Lets callers locate an input by its stable name fragment, ignoring the
+    date/hour stamp in the filename and which sub-folder it sits in, e.g.
+    find_key("load_actual") -> "data/raw/entsoe_bg/load_actual.csv".
+    find_key("1day_ahead_forecast") -> newest "bulgaria_1day_ahead_forecast_*".
+    Returns None if nothing matches.
+    """
+    s3 = _require_client()
+    bucket = os.environ["S3_BUCKET"]
+    matches, token = [], None
+    while True:
+        kw = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            kw["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kw)
+        for o in resp.get("Contents", []):
+            if name_contains in o["Key"] and o["Key"].endswith(suffix):
+                matches.append(o)
+        if resp.get("IsTruncated"):
+            token = resp.get("NextContinuationToken")
+        else:
+            break
+    if not matches:
+        return None
+    return max(matches, key=lambda o: o["LastModified"])["Key"]
+
+
+def read_csv(key: str, **kwargs):
+    """Read a CSV straight from S3 into a pandas DataFrame (no local file).
+
+    Pass an exact key; combine with latest_key() for date-stamped filenames.
+    Extra kwargs are forwarded to pandas.read_csv.
+    """
+    import io
+    import pandas as pd
+    s3 = _require_client()
+    bucket = os.environ["S3_BUCKET"]
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    return pd.read_csv(io.BytesIO(obj["Body"].read()), **kwargs)

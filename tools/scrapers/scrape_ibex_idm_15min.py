@@ -194,6 +194,8 @@ def main() -> int:
     print(f"  columns: {list(df.columns)}")
 
     if do_upload:
+        import pathlib
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
         from upload_s3 import upload
         upload(out)
     return 0

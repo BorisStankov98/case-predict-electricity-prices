@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Fetch the archived hourly *forecast* for Bulgaria (country centroid) in UTC,
-from 2022-01-01 through today, and write it to a single CSV.
+"""Fetch the 1-DAY-AHEAD hourly weather forecast for Bulgaria (country centroid),
+in UTC, from the start of the archive through today, and write it to a single CSV.
 
-This uses Open-Meteo's Historical Forecast API
-(https://historical-forecast-api.open-meteo.com), which stores the forecasts that
-were actually issued by the weather models in the past -- NOT the ERA5 reanalysis
-("real"/measured) data. The archive begins 2022-01-01.
+This uses Open-Meteo's Previous Runs API
+(https://previous-runs-api.open-meteo.com). The `_previous_day1` suffix returns,
+for each valid timestamp, the value that was predicted exactly 24 hours earlier --
+i.e. a true, fixed 1-day-ahead lead time (NOT the stitched best-available run, and
+NOT ERA5 reanalysis/"real" data).
 
-Requests are chunked by calendar year to keep each response a manageable size.
+Availability of the full 9-variable set at a 1-day lead for this location begins
+2024-02-17 (the 100 m wind series starts mid-day 2024-02-16), so that is the
+archive start used here. Earlier dates only have temperature at a 1-day lead.
 """
 
 import csv
@@ -21,13 +24,15 @@ from datetime import date, datetime, timezone
 # Geographic centroid of Bulgaria
 LATITUDE = 42.73
 LONGITUDE = 25.49
-SOURCE = "open-meteo-historical-forecast"
+SOURCE = "open-meteo-1day-ahead"
 
-API = "https://historical-forecast-api.open-meteo.com/v1/forecast"
-ARCHIVE_START = date(2022, 1, 1)
+API = "https://previous-runs-api.open-meteo.com/v1/forecast"
+# First date with the complete 9-variable set available at a 1-day lead.
+ARCHIVE_START = date(2024, 2, 17)
+LEAD_SUFFIX = "_previous_day1"  # value predicted 24 h before the valid time
 
-# Hourly variables requested (order matters). "timestamp" and "source" are added
-# by us; the rest are Open-Meteo hourly variables.
+# Base hourly variables (output column names). The request asks for each with the
+# _previous_day1 suffix; the CSV is written with these clean names.
 HOURLY_VARS = [
     "temperature_2m",
     "wind_speed_10m",
@@ -46,8 +51,7 @@ def year_chunks(start: date, end: date):
     """Yield (start_date, end_date) pairs split on calendar-year boundaries."""
     cur = start
     while cur <= end:
-        year_end = date(cur.year, 12, 31)
-        chunk_end = min(year_end, end)
+        chunk_end = min(date(cur.year, 12, 31), end)
         yield cur, chunk_end
         cur = date(cur.year + 1, 1, 1)
 
@@ -56,7 +60,7 @@ def fetch_chunk(start: date, end: date) -> dict:
     params = {
         "latitude": LATITUDE,
         "longitude": LONGITUDE,
-        "hourly": ",".join(HOURLY_VARS),
+        "hourly": ",".join(v + LEAD_SUFFIX for v in HOURLY_VARS),
         "timezone": "UTC",
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
@@ -69,7 +73,10 @@ def fetch_chunk(start: date, end: date) -> dict:
 def main():
     today = datetime.now(timezone.utc).date()
 
-    out_path = f"bulgaria_historical_forecast_2022_{today.isoformat()}_UTC.csv"
+    out_path = (
+        f"bulgaria_1day_ahead_forecast_"
+        f"{ARCHIVE_START.isoformat()}_{today.isoformat()}_UTC.csv"
+    )
     total = 0
 
     with open(out_path, "w", newline="") as f:
@@ -80,13 +87,14 @@ def main():
             print(f"Fetching {start} -> {end} ...", file=sys.stderr)
             data = fetch_chunk(start, end)
             hourly = data["hourly"]
-            times = hourly["time"]  # e.g. "2022-01-01T00:00" -- already UTC
+            times = hourly["time"]  # e.g. "2024-02-17T00:00" -- already UTC
 
             for i, t in enumerate(times):
                 ts = datetime.strptime(t, "%Y-%m-%dT%H:%M").strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
-                row = [ts] + [hourly[v][i] for v in HOURLY_VARS] + [SOURCE]
+                row = [ts] + [hourly[v + LEAD_SUFFIX][i] for v in HOURLY_VARS]
+                row.append(SOURCE)
                 writer.writerow(row)
 
             total += len(times)
@@ -95,6 +103,8 @@ def main():
     print(f"Wrote {total} rows to {out_path}")
 
     if "--upload" in sys.argv:
+        import pathlib
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
         from upload_s3 import upload
         upload(out_path)
 

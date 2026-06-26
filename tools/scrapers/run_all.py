@@ -1,22 +1,22 @@
 """
-Run every scraper (and the derive transform) in one go.
+Run every scraper in one go (the scraper stage).
 
 This is an OPTIONAL convenience wrapper — each scraper still runs perfectly
-well on its own (e.g. `python tools/scrape_weather_bulgaria.py --upload`).
-This just runs them all in sequence.
+well on its own (e.g. `python tools/scrapers/scrape_weather_bulgaria.py --upload`).
+This just runs them all in sequence. The clean/transform stage is separate:
+see tools/clean-and-transform/run_all.py.
 
 Any arguments you pass are forwarded to each script, so:
 
-    python tools/run_all.py              # run all, local only
-    python tools/run_all.py --upload     # run all, push each output to S3
+    python tools/scrapers/run_all.py            # run all scrapers, local only
+    python tools/scrapers/run_all.py --upload   # run all, push each output to S3
 
 Each step runs as its own subprocess, so one failure (a missing API key,
 Playwright not installed, a network blip) is logged and skipped rather than
 aborting the whole batch. A summary is printed at the end and the exit code
 is the number of failed steps (0 = all good).
 
-The transform runs last because it consumes the ENTSO-E scraper's output.
-Edit STEPS below to add/remove/reorder scripts.
+Edit STEPS below to add/remove/reorder scrapers.
 """
 
 from __future__ import annotations
@@ -28,8 +28,10 @@ from pathlib import Path
 
 TOOLS = Path(__file__).parent
 
-# Ordered list of scripts to run. The ENTSO-E scraper must precede the
-# transform, which reads its output. Comment out any you don't want.
+# Ordered list of scraper scripts to run (all live in this folder).
+# The clean-and-transform stage is a separate step — see
+# tools/clean-and-transform/ — and is not run from here. Comment out any
+# you don't want.
 STEPS = [
     "scrape_entsoe_bulgaria.py",          # needs ENTSOE_API_KEY
     "scrape_weather_bulgaria.py",
@@ -38,7 +40,6 @@ STEPS = [
     "scrape_historical_forecast.py",      # best-available forecast archive
     "scrape_ibex_idm_15min.py",           # needs Playwright + chromium
     "scrape_days_off_bulgaria.py",
-    "transform_derive_available_capacity.py",  # last: consumes ENTSO-E output
 ]
 
 

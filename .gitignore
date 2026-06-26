@@ -4,6 +4,13 @@
 !.env.example
 .aws/
 
+# Scraped/processed data — S3 is the source of truth, nothing local in git
+tools/scrapers/entsoe_bg/
+tools/scrapers/weather_bg/
+tools/scrapers/weather_forecasts/
+tools/**/*.csv
+tools/**/_summary*.json
+
 # macOS
 .DS_Store
 
