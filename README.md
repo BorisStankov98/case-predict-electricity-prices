@@ -65,6 +65,7 @@ case-predict-electricity-prices/
 │   ├── model_builder_1w.py         ← 168h: 4 models vs naive
 │   ├── model_builder_15min.py      ← 1h-ahead nowcast (+15-min ramp) vs persistence
 │   └── build_report.py             ← all result PNGs → one self-contained index.html
+│                                      (1d as a Bulgarian narrative, others as figure galleries)
 │
 └── data/                           ← provided seed data (snapshots, go stale)
 ```
@@ -216,6 +217,14 @@ back from S3 and bakes them into one **self-contained** `index.html`
 | **`model_builder_1w.py`** | 168h | naive(lag168) | `1week/` — same set (selection picks the model) |
 | **`model_builder_15min.py`** | 1h-ahead | persistence(lag1) | `15min/` — same set **+** a synthetic 15-min ramp plot |
 | **`build_report.py`** | — | — | `index.html` — all of the above in one page |
+
+`build_report.py` renders the **1d** horizon not as a flat gallery but as a
+self-contained **Bulgarian narrative** that follows the Layer-1 story —
+*what we test → which data → which method → results → takeaway* — with the
+1d figures embedded at the right points. The page stays a single vertical
+scroll (not a sideways slide deck). The `1week` / `15min` horizons follow as
+ordered figure galleries. It pulls the PNGs from S3, or falls back to the
+local `results/**/*.png` when S3 isn't configured.
 
 `model/run_all.py` runs the three builders then `build_report.py`, and
 **opens the report** in your browser when done (`--no-open` to skip, e.g.
