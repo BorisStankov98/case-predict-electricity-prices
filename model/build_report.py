@@ -16,8 +16,9 @@ HTML страница (изображенията са base64-вградени, 
 Страницата е вертикална (скролва се надолу) — НЕ е странично-скролваща.
 
 Употреба:
-    python build_report.py            # построй + качи страницата в data/results/ (S3 по подразбиране)
-    python build_report.py --local    # построй само локално index.html (без качване)
+    python build_report.py             # построй + качи страницата в data/results/ (S3 по подразбиране)
+    python build_report.py --no-upload # фигурите се четат от S3, но index.html се пише само локално (preview)
+    python build_report.py --local     # чете фигурите от local_store/ и пише само локално (без S3)
 """
 import base64
 import html
@@ -437,7 +438,10 @@ env-променливи имат предимство пред него. Без
 
 
 def main() -> int:
-    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
+    # Persist the built page by default; backend (s3/local) chosen in upload_s3.
+    # --no-upload regenerates the local index.html only (figures still read from
+    # the active backend) — for previewing report edits without touching S3.
+    do_upload = "--no-upload" not in sys.argv
 
     by_horizon, source = collect()
     built = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
