@@ -5,12 +5,13 @@ The pipeline runners (run_pipeline.py / run_no_scrape.py / model/run_all.py) all
 regenerate the report before opening it. Use this when you just want to re-open
 the report that is already on disk, or pull the latest one back from S3.
 
-    python open_report.py            # open the local model/results/index.html
-    python open_report.py --s3       # download the latest report from S3, then open it
+    python open_report.py            # open the local report; if missing, pull it from S3
+    python open_report.py --s3       # always download the latest report from S3, then open
     python open_report.py --local    # download from the local backend mirror, then open
 
-With no flag it just opens the file already on disk. With --s3 / --local it fetches
-data/results/index.html from that backend, overwrites the local copy, then opens it.
+With no flag it opens the file already on disk; if it isn't there (e.g. a fresh
+clone), it automatically downloads data/results/index.html from the active backend
+(S3 by default) first. --s3 / --local force a fresh download from that backend.
 
 Exit code 0 if the report was opened, 1 otherwise (e.g. not built/uploaded yet).
 """
@@ -54,14 +55,18 @@ def download_report() -> bool:
 
 def main() -> int:
     argv = sys.argv[1:]
-    if "--s3" in argv or "--local" in argv:
+    forced = "--s3" in argv or "--local" in argv
+    # Force a fresh download when a backend flag is given; otherwise download only
+    # if there's no local copy yet (e.g. a fresh clone that never ran the pipeline).
+    if forced or not REPORT.exists():
+        if not REPORT.exists() and not forced:
+            print(f"(no local report at {REPORT} — pulling it from the active "
+                  f"backend…)")
         if not download_report():
+            if not forced:
+                print("  build it first (e.g. python model/run_all.py), or force "
+                      "a backend: python open_report.py --s3 / --local")
             return 1
-    elif not REPORT.exists():
-        print(f"(no report to open — {REPORT} not found)")
-        print("  build it first (e.g. python model/run_all.py), or pull the "
-              "uploaded one: python open_report.py --s3")
-        return 1
 
     print(f"🌐 opening report: {REPORT}")
     try:
