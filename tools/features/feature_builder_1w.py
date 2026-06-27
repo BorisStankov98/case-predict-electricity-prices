@@ -13,8 +13,8 @@ feature_builder_1w.py — L1 feature слой за прогноза 1 СЕДМИ
   • БЕЗ lag24/48/72, БЕЗ метео-прогноза, БЕЗ ЕСО.
 
 Usage:
-    python feature_builder_1w.py            # build only (writes local CSV)
-    python feature_builder_1w.py --upload   # build + upload to data/processed
+    python feature_builder_1w.py            # build + push to data/processed (S3 default)
+    python feature_builder_1w.py --local    # build locally only (no S3 upload)
 """
 import sys
 from pathlib import Path
@@ -46,7 +46,7 @@ def resolve(name: str) -> str:
 
 
 def main() -> int:
-    do_upload = "--upload" in sys.argv
+    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
 
     print(f"master: {MASTER_KEY}")
     M = read_csv(MASTER_KEY, index_col=0)

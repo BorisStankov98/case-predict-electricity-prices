@@ -5,14 +5,14 @@ model stage).
 Counterpart to the scraper / transform / feature run_all scripts. Run this after
 the feature stage has populated data/processed/ in S3. Each model builder still
 runs on its own too, e.g.
-    python model/model_builder_1d.py --upload
+    python model/model_builder_1d.py
 and the report can be regenerated on its own:
-    python model/build_report.py --upload
+    python model/build_report.py
 
 Any arguments you pass are forwarded to each step, so:
 
-    python model/run_all.py            # train + plot locally only
-    python model/run_all.py --upload   # + upload PNGs to data/results/ and build/upload index.html
+    python model/run_all.py            # train + plot + upload to data/results/ (S3 default)
+    python model/run_all.py --local    # train + plot locally only (no upload)
     python model/run_all.py --no-open  # don't pop the report open at the end (headless/CI)
 
 When the run finishes and the report built OK, the self-contained
@@ -20,11 +20,11 @@ model/results/index.html is opened in your default browser (pass --no-open to
 skip — e.g. on a headless server). --no-open is consumed here and not forwarded
 to the steps.
 
-The model builders write their PNGs to model/results/<horizon>/ and (with
---upload) push them to s3://…/data/results/<horizon>/. build_report.py then
+The model builders write their PNGs to model/results/<horizon>/ and (by
+default) push them to s3://…/data/results/<horizon>/. build_report.py then
 pulls every result PNG back from S3 and bakes them into one self-contained
-model/results/index.html (uploaded with --upload). Keep build_report.py LAST so
-it sees the freshly uploaded figures.
+model/results/index.html (uploaded by default; --local to skip). Keep
+build_report.py LAST so it sees the freshly uploaded figures.
 
 Each step runs as its own subprocess, so one failure is logged and skipped
 rather than aborting the whole batch. The exit code is the number of failed
@@ -81,7 +81,7 @@ def main() -> int:
     # --no-open: skip auto-opening the report (for headless/CI runs). Stripped
     # from the args forwarded to the steps (they don't know this flag).
     do_open = "--no-open" not in argv
-    passthrough = [a for a in argv if a != "--no-open"]  # forward e.g. --upload
+    passthrough = [a for a in argv if a != "--no-open"]  # forward e.g. --local
     results = []
     for script in STEPS:
         if not (HERE / script).exists():

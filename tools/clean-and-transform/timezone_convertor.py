@@ -19,8 +19,8 @@ lagged). Load is tz-aware ENTSO-E; the weather forecast is naive-UTC (by file
 name). Everything is canonicalised in UTC, then → local.
 
 Usage:
-    python timezone_convertor.py            # build only (writes local CSV)
-    python timezone_convertor.py --upload   # build + upload to data/processed
+    python timezone_convertor.py            # build + push to data/processed (S3 default)
+    python timezone_convertor.py --local    # build locally only (no S3 upload)
 """
 import sys
 from pathlib import Path
@@ -72,7 +72,7 @@ def resolve(name: str) -> str:
 
 
 def main() -> int:
-    do_upload = "--upload" in sys.argv
+    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
 
     # 1) load + ESO forecast (raw, from S3)
     la_key, lf_key = resolve(NAME_LOAD_ACTUAL), resolve(NAME_LOAD_FORECAST)

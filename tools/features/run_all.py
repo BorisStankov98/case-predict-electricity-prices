@@ -4,12 +4,12 @@ Run every feature builder in one go (the feature stage).
 Counterpart to tools/scrapers/run_all.py and tools/clean-and-transform/run_all.py.
 Run this after the transform stage has populated data/processed/ in S3 with the
 masters. Each builder still runs on its own too, e.g.
-`python tools/features/feature_builder_1d.py --upload`.
+`python tools/features/feature_builder_1d.py`.
 
 Any arguments you pass are forwarded to each step, so:
 
-    python tools/features/run_all.py            # run all, local only
-    python tools/features/run_all.py --upload   # + push features to data/processed
+    python tools/features/run_all.py            # run all, push features to data/processed (default)
+    python tools/features/run_all.py --local    # run all, local only (no upload)
 
 Each step runs as its own subprocess, so one failure (missing master, a bad
 row) is logged and skipped rather than aborting the whole batch. A summary is
@@ -45,7 +45,7 @@ def run_step(script: str, passthrough: list[str]) -> tuple[str, int, float]:
 
 
 def main() -> int:
-    passthrough = sys.argv[1:]  # forward e.g. --upload to every step
+    passthrough = sys.argv[1:]  # forward e.g. --local to every step
     results = []
     for script in STEPS:
         if not (HERE / script).exists():

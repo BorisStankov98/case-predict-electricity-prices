@@ -38,7 +38,7 @@ from upload_s3 import read_csv, upload  # noqa: E402
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 
-DO_UPLOAD = "--upload" in sys.argv
+DO_UPLOAD = True  # always persist; backend (s3/local) chosen in upload_s3
 LOCAL = "Europe/Sofia"
 # PNG-овете отиват тук локално, после се качват в S3 под data/results/1d/.
 FIG = Path(__file__).parent/"results"/"1d"; FIG.mkdir(parents=True, exist_ok=True)

@@ -11,13 +11,13 @@ HTML страница (изображенията са base64-вградени, 
 Чете:    s3://<bucket>/data/results/**/*.png   (качени от model builder-ите),
          а ако S3 не е конфигуриран — локалните ./results/**/*.png.
 Записва:  ./results/index.html                  (локално, винаги)
-Качва:    s3://<bucket>/data/results/index.html (само с --upload)
+Качва:    s3://<bucket>/data/results/index.html (по подразбиране; --local за пропускане)
 
 Страницата е вертикална (скролва се надолу) — НЕ е странично-скролваща.
 
 Употреба:
-    python build_report.py            # построй index.html от наличните PNG
-    python build_report.py --upload   # + качи страницата в data/results/
+    python build_report.py            # построй + качи страницата в data/results/ (S3 по подразбиране)
+    python build_report.py --local    # построй само локално index.html (без качване)
 """
 import base64
 import html
@@ -54,9 +54,9 @@ def collect() -> tuple[dict[str, dict[str, str]], str]:
     """Връща {horizon: {figure_name: base64_data_uri}} и етикет за източника."""
     out: dict[str, dict[str, str]] = {}
 
-    # 1) опит за S3
+    # 1) активният backend (s3 или local) — четем през upload_s3
     try:
-        from upload_s3 import list_keys, read_bytes  # noqa: PLC0415
+        from upload_s3 import describe_backend, list_keys, read_bytes  # noqa: PLC0415
         keys = list(list_keys(RESULTS_PREFIX, ".png"))
         if keys:
             for k in keys:
@@ -66,13 +66,13 @@ def collect() -> tuple[dict[str, dict[str, str]], str]:
                 hz, name = rest[0], rest[-1]
                 uri = "data:image/png;base64," + base64.b64encode(read_bytes(k)).decode("ascii")
                 out.setdefault(hz, {})[name] = uri
-            print(f"намерени {sum(len(v) for v in out.values())} PNG в S3 "
-                  f"({len(out)} хоризонта)")
-            return out, "S3 (data/results/)"
+            print(f"намерени {sum(len(v) for v in out.values())} PNG "
+                  f"({len(out)} хоризонта) · backend: {describe_backend()}")
+            return out, describe_backend()
     except Exception as e:  # noqa: BLE001
-        print(f"  (S3 не е наличен — минавам на локални фигури: {e})")
+        print(f"  (backend не е наличен — минавам на локалната ./results/: {e})")
 
-    # 2) локален резервен вариант
+    # 2) резервен вариант — работната папка model/results/<hz>/*.png
     for png in sorted(RESULTS_DIR.glob("*/*.png")):
         hz, name = png.parent.name, png.name
         uri = "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode("ascii")
@@ -95,7 +95,7 @@ def figure(uri: str | None, name: str, caption: str = "") -> str:
     cap = html.escape(caption) if caption else html.escape(name)
     if not uri:
         return (f'<div class="missing">⚠ Липсва фигурата „{html.escape(name)}“ — '
-                f'пусни съответния model builder с <code>--upload</code>.</div>')
+                f'стартирай (run) съответния model builder (S3 по подразбиране).</div>')
     return (f'<figure><figcaption>{cap}</figcaption>'
             f'<img alt="{html.escape(name)}" src="{uri}"></figure>')
 
@@ -302,8 +302,142 @@ def render_plain(title: str, figs: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
+def render_pipeline_overview() -> str:
+    """Уводна секция за журито: как е устроен целият pipeline (с диаграми)."""
+    return """
+<section id="pipeline"><h2>Как работи pipeline-ът</h2>
+<p class="lead">Цялото решение е един възпроизводим <b>pipeline</b> от четири етапа:
+<code>scrape&nbsp;→&nbsp;clean&nbsp;&amp;&nbsp;transform&nbsp;→&nbsp;features&nbsp;→&nbsp;model</code>.
+Водещият принцип е <b>„S3 е единственият източник на истина“</b> — всеки етап чете
+входа си от S3 и записва изхода обратно в S3. Затова никой локален файл не е
+авторитетен и всеки с достъп до bucket-а може да възпроизведе целия резултат от нулата.</p>
+
+<div class="pipe">
+  <div class="pipe-stage src">
+    <h4>Източници</h4>
+    <ul class="src-list">
+      <li>ENTSO-E (товар, цени)</li>
+      <li>Open-Meteo (метео + day-ahead прогноза)</li>
+      <li>IBEX (15-мин цени)</li>
+      <li>празници / уикенди</li>
+    </ul>
+  </div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-stage"><span class="n">1</span><h4>Scrape</h4>
+    <div class="d">сваля суровите данни от публичните източници</div>
+    <code class="artifact">data/raw/</code></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-stage"><span class="n">2</span><h4>Clean &amp; Transform</h4>
+    <div class="d">канонични часови master-таблици в локално BG време (Europe/Sofia)</div>
+    <code class="artifact">data/processed/ · master_*.csv</code></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-stage"><span class="n">3</span><h4>Features</h4>
+    <div class="d">честни предиктори: лагове, метео-прогноза, календар — без look-ahead</div>
+    <code class="artifact">data/processed/ · features_*.csv</code></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-stage"><span class="n">4</span><h4>Model</h4>
+    <div class="d">walk-forward обучение, 4 модела vs ЕСО/naive + conformal интервали</div>
+    <code class="artifact">data/results/ · фигури + този отчет</code></div>
+</div>
+
+<div class="s3-band">
+  <div class="s3-ico">⛁</div>
+  <div class="s3-txt"><b>S3 bucket — единственият източник на истина.</b>
+    Всеки етап чете входа си от S3 и качва изхода обратно; етапите се свързват
+    през S3, не през локални файлове.</div>
+  <div class="s3-folders">
+    <code class="artifact">data/raw/</code>
+    <code class="artifact">data/processed/</code>
+    <code class="artifact">data/results/</code>
+  </div>
+</div>
+
+<div class="cards" style="margin-top:16px">
+  <div class="card"><h4>Възпроизводимо</h4>една команда (<code>run_pipeline.py</code>)
+    стартира (run) целия chain; всеки етап има и свой <code>run_all.py</code>, който
+    може да се изпълни поотделно.</div>
+  <div class="card"><h4>Модулно и устойчиво</h4>всеки скрипт е отделен процес —
+    при грешка тя се логва и се прескача, без да сваля целия pipeline.</div>
+  <div class="card"><h4>Два backend-а</h4>по подразбиране backend-ът е <b>S3</b>
+    (или каквото е зададено в <code>STORAGE_BACKEND</code> в <code>.env</code>);
+    <code>--local</code> ползва локално огледало (<code>./local_store/</code>) със същия
+    ключов layout.</div>
+</div>
+
+<h3 style="margin-top:24px">Как се стартира (run)</h3>
+<p><b>S3 е по подразбиране</b> — без флаг всеки етап чете входа си от S3 и записва
+изхода обратно, а следващият етап го чете оттам. Backend-ът може да се зададе и в
+<code>.env</code> (<code>STORAGE_BACKEND=s3|local</code>); флаговете <code>--local</code> /
+<code>--s3</code> го override-ват за конкретното изпълнение.</p>
+<table>
+  <thead><tr><th>Команда</th><th>Какво прави</th><th>Кога</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>python run_pipeline.py</code></td>
+      <td>и&nbsp;4-те етапа: scrape&nbsp;→&nbsp;transform&nbsp;→&nbsp;features&nbsp;→&nbsp;model</td>
+      <td>пълен run от нулата (вкл. сваляне на данните)</td>
+    </tr>
+    <tr>
+      <td><code>python run_no_scrape.py</code></td>
+      <td>3&nbsp;етапа: transform&nbsp;→&nbsp;features&nbsp;→&nbsp;model</td>
+      <td>суровите данни вече са в S3 — само преизграждаш master-и&nbsp;→&nbsp;features&nbsp;→&nbsp;модели&nbsp;+&nbsp;отчет</td>
+    </tr>
+    <tr>
+      <td><code>python model/run_all.py</code></td>
+      <td>само етап „model“ (4&nbsp;модела + този отчет)</td>
+      <td>преобучаване само на моделите</td>
+    </tr>
+  </tbody>
+</table>
+<div class="cards" style="margin-top:14px">
+  <div class="card"><h4>--local / --s3</h4><code>--local</code> ползва локален backend
+    (<code>./local_store/</code>) за <b>четене и запис</b> — със същия ключов layout като
+    S3, затова локалният run <b>се верижи</b> (всеки етап чете каквото предходният току-що е
+    записал локално). <code>--s3</code> форсира S3 за конкретния run.</div>
+  <div class="card"><h4>.env</h4>стоящ default за backend-а и креденшъли
+    (<code>STORAGE_BACKEND</code>, <code>S3_BUCKET</code>, AWS ключове) — зарежда се
+    автоматично; реалните env-променливи го надделяват.</div>
+  <div class="card"><h4>--no-open</h4>не отваря автоматично HTML отчета накрая
+    (за headless/CI). По подразбиране отчетът се отваря в браузъра.</div>
+  <div class="card"><h4>--from STAGE</h4>само за <code>run_pipeline.py</code> — започва от
+    даден етап, напр. <code>--from features</code> прескача scrape&nbsp;+&nbsp;transform.</div>
+</div>
+
+<p style="margin-top:18px"><b>Кой backend се ползва?</b> Решава се по приоритет —
+първото налично печели:</p>
+<ol class="prec">
+  <li><b>Флаг</b> на командата: <code>--local</code> или <code>--s3</code></li>
+  <li><b><code>STORAGE_BACKEND</code></b> от <code>.env</code> или env-променлива (<code>s3</code> | <code>local</code>)</li>
+  <li><b>По подразбиране</b>: <code>s3</code></li>
+</ol>
+<div class="note"><code>.env</code> се зарежда автоматично и е <b>по желание</b> — реалните
+env-променливи имат предимство пред него. Без никаква конфигурация pipeline-ът работи на S3.</div>
+
+<h3 style="margin-top:24px">Честна методология — без look-ahead</h3>
+<p>Сърцето на Layer 1: всеки feature ползва само информация, налична
+<b>на момента на прогнозата</b> (ден предварително). Затова разделяме ясно
+какво <b>знаем на гейта</b> от това, което <b>прогнозираме</b>.</p>
+<div class="timeline">
+  <div class="card gate"><h4>🔒 Ден D−1 · гейт — какво знаем</h4>
+    <ul>
+      <li>товарни лагове само <b>≥24ч</b> (<code>lag24/48/168…</code>)</li>
+      <li>реална <b>day-ahead метео-ПРОГНОЗА</b> за всеки час на ден D</li>
+      <li>детерминистичен календар (празници/уикенди)</li>
+    </ul></div>
+  <div class="pipe-arrow">→</div>
+  <div class="card deliver"><h4>🎯 Ден D · прогнозираме 24ч</h4>
+    <ul>
+      <li>прогноза на товара (MW) за всеки час</li>
+      <li>оценка: rolling <b>walk-forward</b> (тестов блок след train)</li>
+      <li>сравнение с ЕСО и naive + 90% conformal интервали</li>
+    </ul></div>
+</div>
+<div class="note">Подробните данни, методи и резултати по хоризонти следват по-долу.</div>
+</section>"""
+
+
 def main() -> int:
-    do_upload = "--upload" in sys.argv
+    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
 
     by_horizon, source = collect()
     built = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -311,12 +445,14 @@ def main() -> int:
 
     # Навигация.
     titles = dict(SECTIONS)
-    nav_links = []
+    nav_links = ['<a href="#pipeline">Как работи</a>']
     if "1d" in by_horizon:
         nav_links.append('<a href="#layer1">Layer 1 · 24ч</a>')
-    nav = '<nav>' + " ".join(nav_links) + '</nav>' if nav_links else ""
-    parts.append(nav)
+    parts.append('<nav>' + " ".join(nav_links) + '</nav>')
     parts.append("<main>")
+
+    # Уводна секция за журито — как работи целият pipeline (с диаграми).
+    parts.append(render_pipeline_overview())
 
     any_figs = False
     ordered = [h for h, _ in SECTIONS] + sorted(set(by_horizon) - {h for h, _ in SECTIONS})
@@ -333,7 +469,7 @@ def main() -> int:
 
     if not any_figs:
         parts.append('<section><p class="empty">Няма резултатни PNG още — '
-                     'пусни model builder-ите с <code>--upload</code> първо.</p></section>')
+                     'стартирай (run) model builder-ите първо (S3 по подразбиране).</p></section>')
 
     parts.append(_FOOT)
     page = "\n".join(parts)
@@ -405,6 +541,40 @@ _HEAD = """<!doctype html>
                border-bottom: 1px solid #e2e8f0; }}
   img {{ display: block; width: 100%; height: auto; }}
   .empty {{ color: #94a3b8; }}
+  /* --- pipeline overview diagrams --- */
+  .pipe {{ display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; margin: 20px 0 12px; }}
+  .pipe-stage {{ position: relative; flex: 1 1 150px; min-width: 148px; background: #13243f;
+                border: 1px solid #2b4a7a; border-radius: 12px; padding: 28px 12px 12px; }}
+  .pipe-stage.src {{ background: #1a2436; border-color: #3a4d6b; padding-top: 12px; }}
+  .pipe-stage .n {{ position: absolute; top: -13px; left: 12px; width: 26px; height: 26px;
+                   background: #2563eb; color: #fff; border-radius: 50%; display: flex;
+                   align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }}
+  .pipe-stage h4 {{ margin: 0 0 5px; font-size: 15px; color: #fff; }}
+  .pipe-stage .d {{ font-size: 12px; color: #9fb3d1; }}
+  .pipe-stage .src-list {{ font-size: 12px; color: #cbd5e1; margin: 4px 0 0; padding-left: 15px; }}
+  .pipe-stage .src-list li {{ margin: 1px 0; }}
+  .artifact {{ display: inline-block; margin-top: 8px; background: #0a1426; border: 1px solid #1c3358;
+              color: #aee0ff; border-radius: 6px; padding: 2px 7px; font-size: 11px;
+              font-family: ui-monospace, monospace; }}
+  .pipe-arrow {{ display: flex; align-items: center; justify-content: center; color: #3b82f6;
+                font-size: 24px; font-weight: 800; flex: 0 0 16px; }}
+  .s3-band {{ display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+             background: linear-gradient(90deg, #0b2233, #0e1c33); border: 1px solid #1d6e8a;
+             border-radius: 12px; padding: 14px 18px; margin: 10px 0 4px; }}
+  .s3-band .s3-ico {{ font-size: 30px; line-height: 1; }}
+  .s3-band .s3-txt {{ font-size: 14px; color: #cbd5e1; flex: 1 1 280px; }}
+  .s3-folders {{ display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }}
+  .prec {{ counter-reset: p; list-style: none; padding-left: 0; margin: 8px 0; }}
+  .prec li {{ position: relative; padding: 8px 12px 8px 40px; margin: 6px 0; background: #14233f;
+             border: 1px solid #25395d; border-radius: 8px; font-size: 14px; }}
+  .prec li::before {{ counter-increment: p; content: counter(p); position: absolute; left: 10px;
+                     top: 50%; transform: translateY(-50%); width: 20px; height: 20px;
+                     background: #2563eb; color: #fff; border-radius: 50%; font-size: 12px;
+                     font-weight: 700; display: flex; align-items: center; justify-content: center; }}
+  .timeline {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 10px 0; }}
+  .timeline .card {{ flex: 1 1 260px; }}
+  .card.gate {{ border-color: #1d5e3b; background: #10231a; }}
+  .card.deliver {{ border-color: #2b4a7a; background: #11203a; }}
 </style>
 </head>
 <body>

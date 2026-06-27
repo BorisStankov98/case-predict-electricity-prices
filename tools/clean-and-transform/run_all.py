@@ -3,12 +3,12 @@ Run every clean/transform step in one go (the transform stage).
 
 Counterpart to tools/scrapers/run_all.py. Run this after the scrapers have
 populated S3 (or local data). Each transform still runs on its own too, e.g.
-`python tools/clean-and-transform/transform_derive_available_capacity.py --upload`.
+`python tools/clean-and-transform/transform_derive_available_capacity.py`.
 
 Any arguments you pass are forwarded to each step, so:
 
-    python tools/clean-and-transform/run_all.py            # run all, local only
-    python tools/clean-and-transform/run_all.py --upload   # + push to data/processed
+    python tools/clean-and-transform/run_all.py            # run all, push to data/processed (default)
+    python tools/clean-and-transform/run_all.py --local    # run all, local only (no upload)
 
 Each step runs as its own subprocess, so one failure (missing input, a bad
 row) is logged and skipped rather than aborting the whole batch. A summary is
@@ -49,7 +49,7 @@ def run_step(script: str, passthrough: list[str]) -> tuple[str, int, float]:
 
 
 def main() -> int:
-    passthrough = sys.argv[1:]  # forward e.g. --upload to every step
+    passthrough = sys.argv[1:]  # forward e.g. --local to every step
     results = []
     for script in STEPS:
         if not (HERE / script).exists():

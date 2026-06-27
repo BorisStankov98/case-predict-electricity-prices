@@ -51,7 +51,7 @@ from upload_s3 import read_csv, upload  # noqa: E402
 try: sys.stdout.reconfigure(encoding="utf-8")
 except Exception: pass
 
-DO_UPLOAD = "--upload" in sys.argv
+DO_UPLOAD = True  # always persist; backend (s3/local) chosen in upload_s3
 LOCAL = "Europe/Sofia"
 H = 168                                                          # хоризонт (часа)
 # PNG-овете отиват тук локално, после се качват в S3 под data/results/1week/.
@@ -90,8 +90,8 @@ if len(Dall) == 0:                                                              
         "Няма НИТО един пълен ред във features_1week_long (всички редове съдържат NaN).\n"
         "Най-вероятно lag8760 (1г warmup) надхвърля наличната история — актуалното метео\n"
         "(weather_bg_total) е по-късо от товара. Презапиши го с по-дълъг прозорец, напр.:\n"
-        "  python tools/scrapers/scrape_weather_bulgaria.py 2022-09-01 <today> --upload\n"
-        "после: transform_1_week_forecast_local_time.py → feature_builder_1w.py (с --upload).")
+        "  python tools/scrapers/scrape_weather_bulgaria.py 2022-09-01 <today>\n"
+        "после: transform_1_week_forecast_local_time.py → feature_builder_1w.py (S3 по подразбиране).")
 Z = (Dall[base]-Dall[base].mean())/Dall[base].std()
 ols0 = sm.OLS(yt, sm.add_constant(Z.values)).fit(cov_type="HAC", cov_kwds={"maxlags": NWLAG})
 pval = pd.Series(ols0.pvalues[1:], index=base)

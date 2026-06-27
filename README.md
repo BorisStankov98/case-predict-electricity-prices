@@ -17,7 +17,7 @@ to S3 (`data/results/`). No local file is authoritative — anyone with the
 credentials can reproduce everything from scratch.
 
 The whole chain — **scrape → clean-and-transform → features → model** —
-runs with one command (`python run_pipeline.py --upload`), or one stage at
+runs with one command (`python run_pipeline.py`), or one stage at
 a time.
 
 ---
@@ -28,6 +28,7 @@ a time.
 case-predict-electricity-prices/
 ├── README.md                       ← you are here: the pipeline
 ├── run_pipeline.py                 ← run ALL 4 stages end to end
+├── run_no_scrape.py                ← run everything EXCEPT scrapers (transform → features → model)
 ├── requirements.txt                ← Python dependencies
 ├── LICENSE                         ← MIT
 │
@@ -79,27 +80,40 @@ case-predict-electricity-prices/
   ───────────────          ──────────────────        ─────────────────        ──────────────
   ENTSO-E ┐
   Open-Met├► tools/scrapers/* ─► data/raw/ ─► tools/clean-and-transform/* ─► data/processed/ ─► tools/features/* ─► data/processed/ ─► model/* ─► data/results/
-  IBEX    │     (--upload)                            (--upload)               master_*.csv      (--upload)          features_*.csv     (--upload)   figures + index.html
+  IBEX    │      (→ S3)                                (→ S3)                   master_*.csv       (→ S3)             features_*.csv      (→ S3)      figures + index.html
   holidays┘
 ```
 
-Every stage hands off **through S3**: each stage reads the previous
-stage's output back from the bucket, so `--upload` is what actually
-connects the chain. All four stages follow the same conventions:
+Every stage hands off through the **active storage backend** — each stage
+reads the previous stage's output and writes its own through one helper
+(`tools/upload_s3.py`). There are two interchangeable backends:
 
-- **`--upload`** — every script writes its output locally; pass `--upload`
-  to also push it to S3. Because the next stage reads from S3, you want
-  `--upload` for any real run (without it a stage only sees the *last*
-  uploaded output of the previous one).
+- **`s3`** *(default)* — the shared bucket; the real source of truth.
+- **`local`** — a mirror under `./local_store/` with the **same key layout**
+  (`data/raw/…`, `data/processed/…`, `data/results/…`). Because reads *and*
+  writes go to that mirror, a fully local run **chains** stage→stage with no
+  network.
+
+The backend is chosen by (in priority order) a CLI flag, else the
+`STORAGE_BACKEND` env var, else `s3`. A `.env` at the repo root is loaded
+automatically (real env vars win), so you can keep `STORAGE_BACKEND`, AWS
+credentials and `S3_BUCKET` there. All scripts follow the same conventions:
+
+- **`--local` / `--s3`** — force the local or S3 backend for that run,
+  overriding `.env`. With no flag you get the `.env` default (or `s3`).
 - **`run_all.py`** — an orchestrator per stage. It runs each script as its
   own subprocess, so one failure (missing API key, network blip, missing
   input) is logged and skipped rather than aborting the batch. It forwards
-  any arguments to every step (so `run_all.py --upload` uploads
-  everything) and exits with the number of failed steps.
+  any arguments to every step (so `run_all.py --local` runs the whole stage
+  on the local backend) and exits with the number of failed steps.
 - **`run_pipeline.py`** — the top-level orchestrator that chains all four
   stage `run_all.py`s in order. `--from STAGE` resumes mid-pipeline (handy
-  since scraping is the slow part), `--no-open` is forwarded only to the
-  model stage.
+  since scraping is the slow part), `--local`/`--s3` pick the backend,
+  `--no-open` is forwarded only to the model stage.
+- **`run_no_scrape.py`** — runs everything **except** the scrapers
+  (transform → features → model), in order, on top of the raw data already
+  in the backend. Uses the default backend (or `--local`/`--s3`); opens the
+  report at the end unless `--no-open`.
 
 Each script also runs perfectly well on its own — the `run_all.py`s and
 `run_pipeline.py` are just convenience wrappers.
@@ -114,7 +128,10 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements.txt          # scrapers + feature/model stack (sklearn, xgboost, …)
 playwright install chromium              # only needed for the IBEX scraper
 
-# 2. Configure S3 + AWS credentials (see "Configuration" below)
+# 2. Configure the backend (see "Configuration" below). Easiest: copy the
+#    template and edit it — .env is loaded automatically.
+cp .env.example .env        # then set S3_BUCKET + AWS creds (or STORAGE_BACKEND=local)
+#    …or export them instead of using .env:
 export AWS_ACCESS_KEY_ID=...   AWS_SECRET_ACCESS_KEY=...   AWS_DEFAULT_REGION=eu-central-1
 export S3_BUCKET=your-bucket-name
 
@@ -122,25 +139,37 @@ export S3_BUCKET=your-bucket-name
 export ENTSOE_API_KEY=your-token-here
 
 # 4. Run the WHOLE pipeline (scrape → transform → features → model + report)
-python run_pipeline.py --upload
+#    S3 is the default — no flag needed.
+python run_pipeline.py
 #    …or run it one stage at a time:
-python tools/scrapers/run_all.py --upload            # STAGE 1 → data/raw/
-python tools/clean-and-transform/run_all.py --upload # STAGE 2 → data/processed/ (masters)
-python tools/features/run_all.py --upload            # STAGE 3 → data/processed/ (features)
-python model/run_all.py --upload                     # STAGE 4 → data/results/ (figures + report)
+python tools/scrapers/run_all.py            # STAGE 1 → data/raw/
+python tools/clean-and-transform/run_all.py # STAGE 2 → data/processed/ (masters)
+python tools/features/run_all.py            # STAGE 3 → data/processed/ (features)
+python model/run_all.py                     # STAGE 4 → data/results/ (figures + report)
 ```
 
-`run_pipeline.py --from features --upload` resumes from a later stage
-(skips the slow scrape). Drop `--upload` to run locally — but note the
-stages hand off through S3, so a real end-to-end run needs it.
+`run_pipeline.py --from features` resumes from a later stage (skips the
+slow scrape). Add `--local` to run entirely on the local backend
+(`./local_store/`) — reads *and* writes stay local, so it still chains
+end-to-end without any S3 access.
+
+If the scrapers have already published `data/raw/` to S3 and you just want
+to rebuild everything on top of it, use the dedicated wrapper (S3 by
+default — no flag needed):
+
+```bash
+python run_no_scrape.py            # transform → features → model, via S3
+python run_no_scrape.py --local    # same, entirely on the local backend (./local_store/)
+```
 
 ---
 
 ## Stage 1 — Scrapers (`tools/scrapers/`)
 
 Each scraper takes an optional `[START END]` window (dates `YYYY-MM-DD`)
-and an optional `--upload` flag. Output lands in a folder/file next to the
-script, and (with `--upload`) under `data/raw/` in S3.
+and an optional `--local` flag. Output lands in a folder/file next to the
+script, and (by default) under `data/raw/` in S3 — pass `--local` to skip
+the upload.
 
 | Script | Source | What it collects |
 | --- | --- | --- |
@@ -157,7 +186,7 @@ script, and (with `--upload`) under `data/raw/` in S3.
 ## Stage 2 — Clean & transform (`tools/clean-and-transform/`)
 
 These read raw inputs **back from S3** (`data/raw/`), build the canonical
-masters, and (with `--upload`) push them to `data/processed/`. Order
+masters, and (by default) push them to `data/processed/`. Order
 matters — see `run_all.py`'s `STEPS`.
 
 | Script | What it builds |
@@ -189,7 +218,7 @@ time (`Europe/Sofia`). Both carry `load_actual_mw`, `load_forecast_mw`
 ## Stage 3 — Features (`tools/features/`)
 
 Each feature builder reads a master **back from S3**, derives the leakage-
-safe predictor table for one forecast horizon, and (with `--upload`) pushes
+safe predictor table for one forecast horizon, and (by default) pushes
 it to `data/processed/`. Each adds load lags, weather, and calendar blocks
 honest to its gate, and prints an ADF stationarity check.
 
@@ -206,7 +235,7 @@ honest to its gate, and prints an ADF stationarity check.
 Each model builder reads a feature table **back from S3**, runs a
 walk-forward (rolling-origin) evaluation of four models
 (Ridge / Lasso / ElasticNet / XGBoost) against a horizon-appropriate
-benchmark, and (with `--upload`) pushes its figures to
+benchmark, and (by default) pushes its figures to
 `data/results/<horizon>/`. `build_report.py` then pulls every result PNG
 back from S3 and bakes them into one **self-contained** `index.html`
 (images base64-embedded), uploaded to `data/results/index.html`.
@@ -237,23 +266,28 @@ clearly **not** a measured 15-min skill — there is no real 15-min load.
 
 ## Configuration
 
-`tools/upload_s3.py` handles all S3 I/O via the standard AWS credential
-chain (env vars, `~/.aws/credentials`, or an IAM role) — no browser flow,
-nothing to refresh. Per-device setup is just: clone, install, set these
-env vars.
+`tools/upload_s3.py` handles all storage I/O. For the S3 backend it uses
+the standard AWS credential chain (env vars, `~/.aws/credentials`, or an IAM
+role) — no browser flow, nothing to refresh. Config can live in env vars or
+a `.env` at the repo root (loaded automatically; real env vars win — copy
+`.env.example` to `.env` to start).
 
 | Variable | Purpose |
 | --- | --- |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | AWS credentials (required) |
-| `AWS_DEFAULT_REGION` | e.g. `eu-central-1` (required for AWS) |
-| `S3_BUCKET` | Target bucket (required for `--upload` and the transforms) |
+| `STORAGE_BACKEND` | `s3` (default) or `local` — which backend to use |
+| `LOCAL_STORE` | Local-backend mirror root; default `./local_store` |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | AWS credentials (S3 backend) |
+| `AWS_DEFAULT_REGION` | e.g. `eu-central-1` (S3 backend, AWS) |
+| `S3_BUCKET` | Target bucket (required for the S3 backend) |
 | `S3_PREFIX` | Key prefix; default `data/raw` |
 | `S3_ENDPOINT_URL` | Only for R2/B2/MinIO; omit for AWS S3 |
-| `S3_DELETE_LOCAL` | `1`/`true`/`yes` → delete the local copy after a successful upload |
+| `S3_DELETE_LOCAL` | `1`/`true`/`yes` → delete the working copy after a successful save |
 | `ENTSOE_API_KEY` | ENTSO-E token (only the ENTSO-E scraper needs it) |
 
-If boto3 isn't installed or `S3_BUCKET` isn't set, `--upload` is a
-graceful no-op (warns, doesn't crash) so scrapers still work offline.
+The local backend needs none of the S3 vars. On the S3 backend, if boto3
+isn't installed or `S3_BUCKET` isn't set, an upload is a graceful no-op
+(warns, doesn't crash); a *read* will raise asking you to configure S3 or
+use `--local`.
 
 ---
 

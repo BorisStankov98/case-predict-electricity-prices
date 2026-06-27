@@ -175,8 +175,8 @@ def main() -> int:
     end = today - timedelta(days=1)
     start = end - timedelta(days=89)  # 90 days inclusive
 
-    do_upload = "--upload" in sys.argv
-    args = [a for a in sys.argv[1:] if a != "--upload"]
+    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
+    args = [a for a in sys.argv[1:] if a not in ("--local", "--s3")]
 
     if len(args) == 2:
         start = datetime.strptime(args[0], "%Y-%m-%d").date()

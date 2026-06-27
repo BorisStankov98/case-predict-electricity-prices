@@ -4,20 +4,24 @@ Run the WHOLE forecasting pipeline end to end:
     scrape  →  clean-and-transform  →  features  →  model (+ HTML report)
 
 Each stage is its own run_all.py; this script just chains them in order. The
-stages hand off through S3 — every stage reads the previous stage's output from
-data/raw/ or data/processed/ in the bucket — so you almost always want
---upload, otherwise a stage won't see what the one before it just produced.
+stages hand off through the active storage backend — each reads the previous
+stage's output and writes its own. By default that backend is S3 (the shared
+bucket). Pass --local to use a local mirror (./local_store/) instead: a fully
+local run still chains, because each stage reads what the previous one just
+wrote locally. The default backend can also be set in .env
+(STORAGE_BACKEND=s3|local); --local / --s3 override it for a single run.
 
 Usage
 -----
-    python run_pipeline.py --upload                  # full pipeline via S3 (normal)
-    python run_pipeline.py --upload --from transform # skip scraping; start at transform
-    python run_pipeline.py --upload --no-open        # don't auto-open the report at the end
-    python run_pipeline.py                           # local-only (warns: stages won't chain via S3)
+    python run_pipeline.py                           # use the .env / default backend (s3)
+    python run_pipeline.py --from transform          # skip scraping; start at transform
+    python run_pipeline.py --no-open                 # don't auto-open the report at the end
+    python run_pipeline.py --local                   # local mirror under ./local_store/
 
 Flags
 -----
-    --upload        forward to every stage (publish each stage's output to S3)
+    --local         use the local backend (./local_store/) for read AND write
+    --s3            force the S3 backend for this run
     --from STAGE    start at STAGE (scrape|transform|features|model); skip earlier stages
     --no-open       passed ONLY to the model stage (skip auto-opening the report)
     -h, --help      show this message and exit
@@ -62,8 +66,11 @@ def main() -> int:
         print(__doc__)
         return 0
 
-    do_upload = "--upload" in argv
     no_open = "--no-open" in argv
+    # Explicit backend override to forward to every stage (else they inherit the
+    # .env / default backend). --local wins over --s3 if both are given.
+    override = (["--local"] if "--local" in argv
+                else ["--s3"] if "--s3" in argv else [])
 
     # --from STAGE (default: scrape, i.e. run everything).
     start = "scrape"
@@ -74,15 +81,12 @@ def main() -> int:
         start = argv[i + 1]
     start_ix = STAGE_NAMES.index(start)
 
-    if not do_upload:
-        print("⚠ WARNING: running WITHOUT --upload.\n"
-              "  The stages hand off through S3, so each stage will read the LAST\n"
-              "  uploaded output of the previous one (or fail if none exists) rather\n"
-              "  than what this run just built locally. Add --upload for a real run.")
+    sys.path.insert(0, str(ROOT / "tools"))
+    from upload_s3 import describe_backend  # noqa: PLC0415
 
     selected = STAGES[start_ix:]
     print(f"\nPipeline: {' → '.join(n for n, _ in selected)}"
-          f"{'  [--upload]' if do_upload else '  [local-only]'}")
+          f"  ·  backend: {describe_backend()}")
 
     results = []
     for name, script in selected:
@@ -90,7 +94,7 @@ def main() -> int:
             print(f"\n⚠ skipping {name} — {script} not found")
             results.append((name, -1, 0.0))
             continue
-        args = ["--upload"] if do_upload else []
+        args = list(override)
         # --no-open is a model-stage flag only; forwarding it to the scrapers
         # would break their positional-arg parsing.
         if name == "model" and no_open:

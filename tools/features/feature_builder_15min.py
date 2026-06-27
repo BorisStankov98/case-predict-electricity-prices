@@ -15,8 +15,8 @@ feature_builder_15min.py — feature слой за прогноза 1 ЧАС н�
   features_1h_ahead_long.csv  (локално BG)  →  data/processed/
 
 Usage:
-    python feature_builder_15min.py            # build only (writes local CSV)
-    python feature_builder_15min.py --upload   # build + upload to data/processed
+    python feature_builder_15min.py            # build + push to data/processed (S3 default)
+    python feature_builder_15min.py --local    # build locally only (no S3 upload)
 """
 import sys
 from pathlib import Path
@@ -63,7 +63,7 @@ def resolve_load() -> str:
 
 
 def main() -> int:
-    do_upload = "--upload" in sys.argv
+    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
 
     # ── вход 1: часов master (прогнозно метео + период) → локално ──
     print(f"master: {MASTER_KEY}")

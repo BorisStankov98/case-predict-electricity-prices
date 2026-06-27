@@ -65,14 +65,14 @@ def main() -> int:
     start = date(2022, 1, 1)
     end = date(2026, 12, 31)
 
-    do_upload = "--upload" in sys.argv
-    args = [a for a in sys.argv[1:] if a != "--upload"]
+    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
+    args = [a for a in sys.argv[1:] if a not in ("--local", "--s3")]
 
     if len(args) == 2:
         start = datetime.strptime(args[0], "%Y-%m-%d").date()
         end = datetime.strptime(args[1], "%Y-%m-%d").date()
     elif len(args) not in (0, 2):
-        sys.exit("Usage: python scrape_days_off_bulgaria.py [START END] [--upload]\n"
+        sys.exit("Usage: python scrape_days_off_bulgaria.py [START END] [--local]\n"
                  "       (dates as YYYY-MM-DD; default = 2022-01-01 → 2026-12-31)")
 
     df = build(start, end)

@@ -17,8 +17,8 @@ feature_builder_1d.py — от часовия master → часов feature сл
 (за реконструкция на нивото: load = lag24 + прогноза). Иначе пише нивовия features_1h_long.csv.
 
 Usage:
-    python feature_builder_1d.py            # build only (writes local CSV)
-    python feature_builder_1d.py --upload   # build + upload to data/processed
+    python feature_builder_1d.py            # build + push to data/processed (S3 default)
+    python feature_builder_1d.py --local    # build locally only (no S3 upload)
 """
 import sys
 from pathlib import Path
@@ -51,7 +51,7 @@ def resolve(name: str) -> str:
 
 
 def main() -> int:
-    do_upload = "--upload" in sys.argv
+    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
 
     # ── вход 1: часов master (прогнозно метео + период) → локално ──
     print(f"master: {MASTER_KEY}")

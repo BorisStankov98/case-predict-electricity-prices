@@ -2,14 +2,14 @@
 Run every scraper in one go (the scraper stage).
 
 This is an OPTIONAL convenience wrapper — each scraper still runs perfectly
-well on its own (e.g. `python tools/scrapers/scrape_weather_bulgaria.py --upload`).
+well on its own (e.g. `python tools/scrapers/scrape_weather_bulgaria.py`).
 This just runs them all in sequence. The clean/transform stage is separate:
 see tools/clean-and-transform/run_all.py.
 
 Any arguments you pass are forwarded to each script, so:
 
-    python tools/scrapers/run_all.py            # run all scrapers, local only
-    python tools/scrapers/run_all.py --upload   # run all, push each output to S3
+    python tools/scrapers/run_all.py            # run all, push each output to S3 (default)
+    python tools/scrapers/run_all.py --local    # run all, local only (no upload)
 
 Each step runs as its own subprocess, so one failure (a missing API key,
 Playwright not installed, a network blip) is logged and skipped rather than
@@ -55,7 +55,7 @@ def run_step(script: str, passthrough: list[str]) -> tuple[str, int, float]:
 
 
 def main() -> int:
-    passthrough = sys.argv[1:]  # forward e.g. --upload to every script
+    passthrough = sys.argv[1:]  # forward e.g. --local to every script
     results = []
     for script in STEPS:
         if not (TOOLS / script).exists():

@@ -14,6 +14,9 @@ tools/**/_summary*.json
 # Model figure outputs + HTML report — uploaded to S3 data/results/, not committed
 model/results/
 
+# Local storage backend mirror (STORAGE_BACKEND=local / --local) — not committed
+local_store/
+
 # macOS
 .DS_Store
 

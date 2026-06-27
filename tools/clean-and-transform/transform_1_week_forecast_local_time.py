@@ -30,8 +30,8 @@ Why ACTUAL weather (not a forecast, as in the 24h master)?
   2022-01 (vs 2024-02-17 for the forecast) → a longer train.
 
 Usage:
-    python transform_1_week_forecast_local_time.py            # build only (writes local CSV)
-    python transform_1_week_forecast_local_time.py --upload   # build + upload to data/processed
+    python transform_1_week_forecast_local_time.py            # build + push to data/processed (S3 default)
+    python transform_1_week_forecast_local_time.py --local    # build locally only (no S3 upload)
 """
 import sys
 from datetime import timezone, timedelta
@@ -81,7 +81,7 @@ def resolve(name: str) -> str:
 
 
 def main() -> int:
-    do_upload = "--upload" in sys.argv
+    do_upload = True  # always persist; backend (s3/local) chosen in upload_s3
 
     # 1) load + ESO forecast (tz-aware → local)
     la_key, lf_key = resolve(NAME_LOAD_ACTUAL), resolve(NAME_LOAD_FORECAST)

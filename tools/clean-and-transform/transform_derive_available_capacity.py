@@ -129,11 +129,10 @@ def main() -> int:
         print("  no outages reported (available == nameplate): "
               + ", ".join(untouched))
 
-    if "--upload" in sys.argv:
-        import pathlib
-        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-        from upload_s3 import upload
-        upload(OUT)
+    import pathlib
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    from upload_s3 import upload
+    upload(OUT)  # persists to the active backend (s3/local — see upload_s3)
     return 0
 
 
