@@ -1,21 +1,27 @@
 """
-Run every feature builder in one go (the feature stage).
+Run the feature builders for one layer (the feature stage).
 
 Counterpart to tools/scrapers/run_all.py and tools/clean-and-transform/run_all.py.
 Run this after the transform stage has populated data/processed/ in S3 with the
 masters. Each builder still runs on its own too, e.g.
-`python tools/features/feature_builder_1d.py`.
+`python tools/features/layer_1/feature_builder_1d.py`.
 
-Any arguments you pass are forwarded to each step, so:
+Per-layer execution — pass the layer as the first positional argument:
 
-    python tools/features/run_all.py            # run all, push features to data/processed (default)
+    python tools/features/run_all.py            # Layer 1 (default): consumption/load
+    python tools/features/run_all.py layer_1    # same, explicit
+    python tools/features/run_all.py layer_2    # Layer 2 (supply): weather/calendar/outage features
+
+Layers 1 (consumption) and 2 (supply) have feature builders; Layer 3 (price) is a
+placeholder. Any other arguments are forwarded to each step, so:
+
     python tools/features/run_all.py --local    # run all, local only (no upload)
 
 Each step runs as its own subprocess, so one failure (missing master, a bad
 row) is logged and skipped rather than aborting the whole batch. A summary is
 printed at the end; the exit code is the number of failed steps (0 = all good).
 
-Edit STEPS below to add/remove/reorder feature builders.
+Edit LAYERS below to add/remove/reorder feature builders or layers.
 """
 
 from __future__ import annotations
@@ -27,12 +33,19 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 
-# Ordered list of feature builders to run (all live in this folder).
-STEPS = [
-    "feature_builder_1d.py",     # day-ahead (24h) features ← master_hourly_long_forecasted_weather
-    "feature_builder_1w.py",     # week-ahead (168h) features ← master_1week_long
-    "feature_builder_15min.py",  # 1h-ahead nowcast features ← same 1-day master (no separate transform)
-]
+# Per-layer feature builders (paths relative to tools/features/).
+LAYERS = {
+    "layer_1": [
+        "layer_1/feature_builder_1d.py",     # day-ahead (24h) features ← master_hourly_long_forecasted_weather
+        "layer_1/feature_builder_1w.py",     # week-ahead (168h) features ← master_1week_long
+        "layer_1/feature_builder_15min.py",  # 1h-ahead nowcast features ← same 1-day master (no separate transform)
+    ],
+    "layer_2": [
+        "layer_2/feature_builder_supply.py",  # supply features ← master_supply_long
+    ],
+    "layer_3": [],  # price side — not built yet
+}
+DEFAULT_LAYER = "layer_1"
 
 
 def run_step(script: str, passthrough: list[str]) -> tuple[str, int, float]:
@@ -45,9 +58,25 @@ def run_step(script: str, passthrough: list[str]) -> tuple[str, int, float]:
 
 
 def main() -> int:
-    passthrough = sys.argv[1:]  # forward e.g. --local to every step
+    # First positional arg (not a --flag) selects the layer; default Layer 1.
+    layer = DEFAULT_LAYER
+    passthrough = []
+    for a in sys.argv[1:]:
+        if a.startswith("-"):
+            passthrough.append(a)  # forward e.g. --local to every step
+        else:
+            layer = a              # positional → layer selector
+
+    if layer not in LAYERS:
+        sys.exit(f"unknown layer '{layer}' — choose one of: {', '.join(LAYERS)}")
+    steps = LAYERS[layer]
+    if not steps:
+        print(f"feature stage · {layer}: no feature builders yet — nothing to run.")
+        return 0
+    print(f"\nfeature stage · {layer}  ({len(steps)} step(s))")
+
     results = []
-    for script in STEPS:
+    for script in steps:
         if not (HERE / script).exists():
             print(f"\n⚠ skipping {script} — file not found")
             results.append((script, -1, 0.0))
@@ -58,7 +87,7 @@ def main() -> int:
             print("\nInterrupted — stopping.")
             break
 
-    print(f"\n\n{'=' * 70}\nSUMMARY\n{'=' * 70}")
+    print(f"\n\n{'=' * 70}\nSUMMARY · {layer}\n{'=' * 70}")
     failures = 0
     for name, rc, secs in results:
         status = "✓ ok" if rc == 0 else ("⚠ missing" if rc == -1 else f"✗ rc={rc}")

@@ -22,8 +22,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# Make the shared tools/ dir importable (for upload_s3) from this subfolder.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Make the shared tools/ dir importable (for upload_s3) from tools/features/layer_1/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from upload_s3 import read_csv, find_key, upload_processed  # noqa: E402
 
 try:

@@ -303,6 +303,61 @@ def render_plain(title: str, figs: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
+# ── Layer 2 (supply): кратък разказ + фигурите на supply модела ──────────────
+# Подредба и български надписи на supply фигурите.
+SUPPLY_FIGS = [
+    ("supply_series.png", "Пълна серия на предлагането (генерация + нетен внос), MW · локално BG време"),
+    ("supply_predictions.png", "Тестов период: реално предлагане vs 6-те модела + naive (стандартизирано)"),
+    ("supply_metrics.png", "Тестови метрики по модел — MSE / RMSE / MAE / MAPE (стандартизирани единици)"),
+]
+
+
+def render_layer2(figs: dict[str, str]) -> str:
+    """HTML за Layer 2 (предлагане) — разказ + фигури."""
+    parts: list[str] = ['<section id="layer2"><h2>Layer 2 — Прогноза на предлагането (supply) · 24ч</h2>']
+    parts.append(
+        '<p class="lead"><b>Предлагане = обща генерация (всички производствени типове) '
+        '+ нетен внос</b> (<code>net_position</code>). Целта е прогноза на предлагането от '
+        '<b>честни</b> предиктори, налични към момента: <b>метео</b>, <b>календар</b> '
+        '(уикенд/празник) и <b>недостъпност</b> (планов ремонт + аварийни изключвания). '
+        'Същите етапи като Layer 1, разделени по слой: '
+        '<code>transform&nbsp;→&nbsp;features&nbsp;→&nbsp;model</code>.</p>')
+
+    parts.append(step("Данни и таргет", ul([
+        "<b>Таргет:</b> <code>supply</code> = Σ генерация по тип + <code>net_position</code> (ENTSO-E).",
+        "<b>Метео:</b> 9 актуални променливи (температура, вятър, радиация, облачност, валеж, влажност).",
+        "<b>Календар:</b> <code>is_weekend</code>, <code>is_holiday</code>.",
+        "<b>Недостъпност:</b> <code>prod_maint</code>, <code>gen_maint</code> (планов ремонт) и "
+        "<code>gen_outages</code> (аварийни) — изведени от ENTSO-E unavailability върху часовата решетка.",
+    ]) + note("Канонична часова решетка в локално BG време (Europe/Sofia, tz-aware), от единен builder "
+              "(<code>transform_supply_master.py</code>).")))
+
+    parts.append(step("Модели и оценка", ul([
+        "<b>6 модела:</b> Lasso, Ridge, ElasticNet (линейни) + Decision Tree, Random Forest, "
+        "Gradient Boosting (дървета), плюс <b>naive</b> (последна тренировъчна стойност).",
+        "<b>Сплит:</b> train < 2025-10-01, test до края (хронологичен).",
+        "Feature-ите и таргетът се <b>стандартизират</b> по сплит; метриките са в стандартизирани единици.",
+    ])))
+
+    for name, cap in SUPPLY_FIGS:
+        parts.append(figure(figs.get(name), name, cap))
+
+    parts.append(takeaway(
+        "линейните модели (Ridge/ElasticNet/Lasso) <b>бият naive ~2.4×</b> по MAE и са най-добри на теста; "
+        "дърветата <b>овърфитват</b> (висок train R², близък до 0 или отрицателен test R²). "
+        "Сигналът в предлагането е по-слаб от този в товара — затова и R² е по-нисък."))
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+def render_market_intro() -> str:
+    """Първа секция: как работи електроенергийният пазар (представя се на живо)."""
+    return """
+<section id="market"><h2>Как работи електроенергийният пазар</h2>
+<p class="lead">Тази секция ще бъде представена на живо от член на екипа.</p>
+</section>"""
+
+
 def render_pipeline_overview() -> str:
     """Уводна секция за журито: как е устроен целият pipeline (с диаграми)."""
     return """
@@ -312,6 +367,17 @@ def render_pipeline_overview() -> str:
 Водещият принцип е <b>„S3 е единственият източник на истина“</b> — всеки етап чете
 входа си от S3 и записва изхода обратно в S3. Затова никой локален файл не е
 авторитетен и всеки с достъп до bucket-а може да възпроизведе целия резултат от нулата.</p>
+
+<div class="note">Решението е организирано на <b>слоеве (layers)</b>:
+<b>Layer&nbsp;1 — потребление (товар)</b>, <b>Layer&nbsp;2 — предлагане (supply)</b> и
+<b>Layer&nbsp;3 — цена</b>. <b>Този отчет е крайният резултат и покрива всички готови
+слоеве</b> — <b>Layer&nbsp;1</b> и <b>Layer&nbsp;2</b> (резултатите им следват по-долу).
+И двата минават през едни и същи етапи, разделени по слой
+(<code>transform</code> / <code>features/layer_*</code> / <code>model/layer_*</code>).
+Пълният прогон (<code>run_pipeline.py</code> / <code>run_no_scrape.py</code>) върти
+<b>всички слоеве</b> и обновява целия отчет; всеки слой може и поотделно, напр.
+<code>python&nbsp;model/run_all.py&nbsp;layer_2</code>. Слоят за
+<b>цената (Layer&nbsp;3)</b> предстои.</div>
 
 <div class="pipe">
   <div class="pipe-stage src">
@@ -384,9 +450,14 @@ def render_pipeline_overview() -> str:
       <td>суровите данни вече са в S3 — само преизграждаш master-и&nbsp;→&nbsp;features&nbsp;→&nbsp;модели&nbsp;+&nbsp;отчет</td>
     </tr>
     <tr>
-      <td><code>python model/run_all.py</code></td>
-      <td>само етап „model“ (4&nbsp;модела + този отчет)</td>
-      <td>преобучаване само на моделите</td>
+      <td><code>python model/run_all.py</code> <span class="badge">layer_1</span></td>
+      <td>само етап „model“ за Layer&nbsp;1 (3&nbsp;модела&nbsp;×&nbsp;хоризонт + този отчет)</td>
+      <td>преобучаване само на моделите за потреблението</td>
+    </tr>
+    <tr>
+      <td><code>python model/run_all.py layer_2</code></td>
+      <td>Layer&nbsp;2 (предлагане) — обучава supply моделите</td>
+      <td>извън <code>run_pipeline.py</code>; фигурите му влизат в този отчет (секция Layer&nbsp;2)</td>
     </tr>
   </tbody>
 </table>
@@ -449,17 +520,25 @@ def main() -> int:
 
     # Навигация.
     titles = dict(SECTIONS)
-    nav_links = ['<a href="#pipeline">Как работи</a>']
+    nav_links = ['<a href="#market">Пазар</a>',
+                 '<a href="#pipeline">Как работи</a>']
     if "1d" in by_horizon:
         nav_links.append('<a href="#layer1">Layer 1 · 24ч</a>')
+    if "supply" in by_horizon:
+        nav_links.append('<a href="#layer2">Layer 2 · supply</a>')
     parts.append('<nav>' + " ".join(nav_links) + '</nav>')
     parts.append("<main>")
 
+    # Първа секция: как работи електроенергийният пазар (представя се на живо).
+    parts.append(render_market_intro())
     # Уводна секция за журито — как работи целият pipeline (с диаграми).
     parts.append(render_pipeline_overview())
 
     any_figs = False
-    ordered = [h for h, _ in SECTIONS] + sorted(set(by_horizon) - {h for h, _ in SECTIONS})
+    # Layer 1 хоризонти първо (в реда на SECTIONS), после Layer 2 (supply), после
+    # всякакви други резултатни папки по азбучен ред.
+    known = {h for h, _ in SECTIONS} | {"supply"}
+    ordered = [h for h, _ in SECTIONS] + ["supply"] + sorted(set(by_horizon) - known)
     for hz in ordered:
         figs = by_horizon.get(hz)
         if not figs:
@@ -468,6 +547,8 @@ def main() -> int:
         if hz == "1d":
             block, _ = render_1d(figs)
             parts.append(block)
+        elif hz == "supply":
+            parts.append(render_layer2(figs))
         else:
             parts.append(render_plain(titles.get(hz, hz), figs))
 
@@ -494,7 +575,7 @@ _HEAD = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Прогноза на товара — резултати</title>
+<title>Прогноза на електроенергийния пазар — резултати</title>
 <style>
   :root {{ color-scheme: light dark; }}
   * {{ box-sizing: border-box; }}
@@ -583,8 +664,9 @@ _HEAD = """<!doctype html>
 </head>
 <body>
 <header>
-  <h1>Прогноза на електрическия товар — резултати от моделите</h1>
-  <p>Изградено {built} · фигури от {source} · самостоятелна страница (изображенията са вградени)</p>
+  <h1>Прогноза на електроенергийния пазар — резултати от моделите</h1>
+  <p>Layer 1 · потребление (товар) &nbsp;·&nbsp; Layer 2 · предлагане (supply) &nbsp;—&nbsp;
+     изградено {built} · фигури от {source} · самостоятелна страница (изображенията са вградени)</p>
 </header>"""
 
 _FOOT = """</main>

@@ -1,36 +1,44 @@
 """
-Run every model builder in one go, then build the combined HTML report (the
-model stage).
+Run the model stage for one layer, then (for Layer 1) build + open the report.
 
 Counterpart to the scraper / transform / feature run_all scripts. Run this after
 the feature stage has populated data/processed/ in S3. Each model builder still
 runs on its own too, e.g.
-    python model/model_builder_1d.py
+    python model/layer_1/model_builder_1d.py
 and the report can be regenerated on its own:
     python model/build_report.py
 
-Any arguments you pass are forwarded to each step, so:
+Per-layer execution — pass the layer as the first positional argument:
 
-    python model/run_all.py            # train + plot + upload to data/results/ (S3 default)
-    python model/run_all.py --local    # train + plot locally only (no upload)
-    python model/run_all.py --no-open  # don't pop the report open at the end (headless/CI)
+    python model/run_all.py             # Layer 1 (default): consumption/load
+    python model/run_all.py layer_1     # same, explicit
+    python model/run_all.py layer_2     # Layer 2: supply side (all-in-one script)
 
-When the run finishes and the report built OK, the self-contained
-model/results/index.html is opened in your default browser (pass --no-open to
-skip — e.g. on a headless server). --no-open is consumed here and not forwarded
-to the steps.
+Layer 1 trains the three horizon builders (24h / 168h / 1h-ahead) and then
+build_report.py bakes their PNGs into one self-contained model/results/index.html,
+which is opened in your browser when done (pass --no-open to skip — e.g. on a
+headless box). --no-open is consumed here and not forwarded to the steps.
 
-The model builders write their PNGs to model/results/<horizon>/ and (by
-default) push them to s3://…/data/results/<horizon>/. build_report.py then
-pulls every result PNG back from S3 and bakes them into one self-contained
-model/results/index.html (uploaded by default; --local to skip). Keep
-build_report.py LAST so it sees the freshly uploaded figures.
+Layer 2 (supply) trains the supply models (model/layer_2/model_builder_supply.py)
+on the Layer 2 feature table and writes figures to data/results/supply/, which
+build_report.py folds into the report's Layer 2 section. Its data engineering and
+feature building live in the transform/feature stages
+(tools/clean-and-transform/transform_supply_master.py and
+tools/features/layer_2/feature_builder_supply.py), so the full Layer 2 chain is:
+transform layer_2 → features layer_2 → model layer_2. The full-run orchestrators
+(run_pipeline.py / run_no_scrape.py) run both layers; you can also run a single
+layer here.
+
+Any other arguments you pass are forwarded to each step, so:
+
+    python model/run_all.py --local     # train + plot locally only (no upload)
+    python model/run_all.py --no-open   # don't pop the report open at the end
 
 Each step runs as its own subprocess, so one failure is logged and skipped
 rather than aborting the whole batch. The exit code is the number of failed
 steps (0 = all good).
 
-Edit STEPS below to add/remove/reorder.
+Edit LAYERS below to add/remove/reorder steps or layers.
 """
 
 from __future__ import annotations
@@ -45,14 +53,25 @@ HERE = Path(__file__).parent
 # build_report.py writes the self-contained page here (also uploaded to S3).
 REPORT = HERE / "results" / "index.html"
 
-# Ordered list of scripts to run (all live in this folder).
-# build_report.py MUST be last — it consumes the PNGs the builders upload.
-STEPS = [
-    "model_builder_1d.py",     # day-ahead (24h): 4 models vs ЕСО/naive → PNGs
-    "model_builder_1w.py",     # week-ahead (168h): 4 models vs naive + intervals/selection → PNGs
-    "model_builder_15min.py",  # 1h-ahead nowcast (+15min ramp): 4 models vs persistence → PNGs
-    "build_report.py",         # gather all result PNGs from S3 → one self-contained index.html
-]
+# Per-layer model steps (paths relative to model/). For a layer that produces
+# report PNGs, keep build_report.py LAST — it consumes the PNGs the builders upload.
+LAYERS = {
+    # Layer 1 — consumption/load: 3 horizon builders + the combined HTML report.
+    "layer_1": [
+        "layer_1/model_builder_1d.py",     # day-ahead (24h): 4 models vs ЕСО/naive → PNGs
+        "layer_1/model_builder_1w.py",     # week-ahead (168h): 4 models vs naive → PNGs
+        "layer_1/model_builder_15min.py",  # 1h-ahead nowcast (+15min ramp) vs persistence → PNGs
+        "build_report.py",                 # gather all result PNGs from S3 → one self-contained index.html
+    ],
+    # Layer 2 — supply side: trains the supply models on the Layer 2 feature
+    # table and writes figures to data/results/supply/ (folded into the report).
+    # (The original all-in-one supply_side.py is kept on disk for reference but
+    # no longer run from here.)
+    "layer_2": [
+        "layer_2/model_builder_supply.py",
+    ],
+}
+DEFAULT_LAYER = "layer_1"
 
 
 def run_step(script: str, passthrough: list[str]) -> tuple[str, int, float]:
@@ -77,13 +96,26 @@ def open_report() -> None:
 
 
 def main() -> int:
-    argv = sys.argv[1:]
-    # --no-open: skip auto-opening the report (for headless/CI runs). Stripped
-    # from the args forwarded to the steps (they don't know this flag).
-    do_open = "--no-open" not in argv
-    passthrough = [a for a in argv if a != "--no-open"]  # forward e.g. --local
+    # First positional arg (not a --flag) selects the layer; default Layer 1.
+    # --no-open is consumed here; every other flag is forwarded to the steps.
+    layer = DEFAULT_LAYER
+    do_open = "--no-open" not in sys.argv
+    passthrough = []
+    for a in sys.argv[1:]:
+        if a == "--no-open":
+            continue
+        if a.startswith("-"):
+            passthrough.append(a)  # forward e.g. --local / --s3
+        else:
+            layer = a              # positional → layer selector
+
+    if layer not in LAYERS:
+        sys.exit(f"unknown layer '{layer}' — choose one of: {', '.join(LAYERS)}")
+    steps = LAYERS[layer]
+    print(f"\nmodel stage · {layer}  ({len(steps)} step(s))")
+
     results = []
-    for script in STEPS:
+    for script in steps:
         if not (HERE / script).exists():
             print(f"\n⚠ skipping {script} — file not found")
             results.append((script, -1, 0.0))
@@ -94,7 +126,7 @@ def main() -> int:
             print("\nInterrupted — stopping.")
             break
 
-    print(f"\n\n{'=' * 70}\nSUMMARY\n{'=' * 70}")
+    print(f"\n\n{'=' * 70}\nSUMMARY · {layer}\n{'=' * 70}")
     failures = 0
     report_ok = False
     for name, rc, secs in results:
@@ -106,7 +138,8 @@ def main() -> int:
         print(f"  {status:<12} {name:<42} {secs:6.1f}s")
     print(f"\n{len(results) - failures}/{len(results)} steps succeeded.")
 
-    # Open the report once the pipeline has finished and the report was built.
+    # Open the report once the stage has finished and the report was built
+    # (Layer 1 only — other layers don't produce the combined index.html).
     if do_open and report_ok:
         open_report()
     return failures

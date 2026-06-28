@@ -1,30 +1,32 @@
 """
-Layer 1 — ПЪЛЕН pipeline (1 СЕДМИЦА, 168ч): рязане на features + 4 модела + диагностика + избор + финална графика.
-Огледало на pipeline_full_l1.py (24ч), адаптирано за хоризонт 168ч.
+Layer 1 — ПЪЛЕН pipeline (1 ЧАС напред, nowcast) + РАМПА към 15-мин.
+Огледало на pipeline_full_l1.py (24ч), адаптирано за хоризонт 1 ЧАС напред.
+
+Идея: дневните прогнози са day-ahead, но за оперативно „след 15 минути" ни трябва кратко
+изпреварване. Затова:
+  1) Реален, ВАЛИДИРУЕМ модел „1 час напред" на часовия товар (гейт T, таргет T+1ч).
+     Бенчмарк = persistence(lag1). Това е ИЗМЕРИМАТА част (реален таргет, реални лагове).
+  2) РАМПА: избраната 1ч-прогноза + реалната текуща стойност → линейни 15-мин стъпки
+     (10→11→12→13→14). Закотвено в реално измерване, но под-часовият профил е ДОПУСКАНЕ
+     (няма реален 15-мин товар) → не се представя като измерено умение.
 
 Разлики спрямо 24ч:
-  • Бенчмарк = САМО naive(lag168). ЕСО НЕ участва (ЕСО е day-ahead, не 7-дневна прогноза).
-  • Метеото е lag168 proxy (миналоседмичен актуал); load лагове ≥168ч.
-  • Точни линейни комбинации за рязане: diff_168_336.
-  • HAC/Newey-West с 168 лага (седмична автокорелация); диагностика по седмична структура.
-  • По-дълъг train (актуалното метео дава пълна история) → плъзгащ 730-дн прозорец.
+  • КЪСИ лагове (lag1 = persistence е водещ); бенчмарк = persistence(lag1), НЕ ЕСО.
+  • Точна линейна комбинация за рязане: diff1 (= lag1 − lag2).
 
-Рязане на features:
-  • махаме diff_168_336 (точна линейна комбинация → rank-deficiency)
-  • махаме feature АКО: статистически НЕзначим (OLS+HAC p≥0.05)  И  |corr(феат→товар)| < 0.20
-
-Модели: Ridge, Lasso, ElasticNet, XGBoost.  Бенчмарк: naive (предната седмица = lag168).
-Изходи (PNG, LAYER1/results/figures/1week/):
-  1 pipeline_metrics.png        — train/test MAE + overfit + RMSE/MAPE/R²/adjR²/bias + vs naive
+Модели: Ridge, Lasso, ElasticNet, XGBoost.  Бенчмарк: persistence (lag1).
+Изходи (PNG, LAYER1/results/figures/15min/):
+  1 pipeline_metrics.png        — train/test MAE + overfit + RMSE/MAPE/R²/adjR²/bias + vs persistence
   2 pipeline_significant.png    — значими/важни features по модел
   3 pipeline_corr_<модел>.png   — corr→таргет + feature×feature (×4)
-  4 pipeline_diagnostics.png    — значимост (DM vs naive) + грешки (ACF/Ljung-Box/ARCH/JB/ADF/KPSS)
+  4 pipeline_diagnostics.png    — значимост (DM vs persistence) + грешки (ACF/Ljung/ARCH/JB/ADF/KPSS)
   5 pipeline_intervals.png      — 90% Mondrian покритие/ширина/Winkler
-  6 pipeline_selection.png      — композитен резултат (MAPE↓ + overfit↓ + Winkler↓) → избран модел
+  6 pipeline_selection.png      — композитен резултат → избран модел
   7 pipeline_learning_curve.png — train vs test MAE спрямо обема обучение
   8 pipeline_final_<модел>.png  — scatter(adjR²) + хистограма грешки + actual/predicted + 90% Mondrian
+  9 pipeline_15min_ramp_<модел>.png — РАМПАТА: 1ч actual/forecast/persistence + 15-мин синтетична рампа
 
-Тест: плъзгащ ~730д, 15-дн блокове от 2025-10-01 (вкл. зима).
+Тест: плъзгащ ~589д, 15-дн блокове от 2025-10-01 (вкл. зима).
 """
 import sys
 from pathlib import Path
@@ -44,8 +46,8 @@ from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBRegressor
 import warnings; warnings.filterwarnings("ignore")
 
-# Make the shared tools/ dir importable (for upload_s3) from model/.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+# Make the shared tools/ dir importable (for upload_s3) from model/layer_1/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 from upload_s3 import read_csv, upload  # noqa: E402
 
 try: sys.stdout.reconfigure(encoding="utf-8")
@@ -53,10 +55,11 @@ except Exception: pass
 
 DO_UPLOAD = True  # always persist; backend (s3/local) chosen in upload_s3
 LOCAL = "Europe/Sofia"
-H = 168                                                          # хоризонт (часа)
-# PNG-овете отиват тук локално, после се качват в S3 под data/results/1week/.
-FIG = Path(__file__).parent/"results"/"1week"; FIG.mkdir(parents=True, exist_ok=True)
-FEATURES_KEY = "data/processed/features_1week_long.csv"
+# PNG-овете отиват тук локално, после се качват в S3 под data/results/15min/.
+FIG = Path(__file__).resolve().parents[1]/"results"/"15min"; FIG.mkdir(parents=True, exist_ok=True)
+FEATURES_KEY = "data/processed/features_1h_ahead_long.csv"
+# Само за визуален контекст в рампата (НЕ метрика); няма отделен 15-мин transform.
+MASTER_15MIN_KEY = "data/processed/master_15min_long_forecasted_weather.csv"
 
 
 def rl(key):
@@ -65,10 +68,10 @@ def rl(key):
 
 print(f"features: {FEATURES_KEY}")
 F = rl(FEATURES_KEY)
-F["naive"] = F["lag168"]                                         # бенчмарк = предната седмица
-all40 = [c for c in F.columns if c not in ("load_actual_mw", "naive")]
+F["naive"] = F["lag1"]                                           # бенчмарк = persistence (текущата стойност)
+all44 = [c for c in F.columns if c not in ("load_actual_mw", "naive")]
 TEST0 = pd.Timestamp("2025-10-01", tz=LOCAL); TEST_DAYS = 15; CAL_DAYS = 30
-TRAIN_LEN = pd.Timedelta(days=730); end = F.index.max(); NWLAG = 168
+TRAIN_LEN = TEST0 - pd.Timestamp("2024-02-20", tz=LOCAL); end = F.index.max(); NWLAG = 48
 tscv = TimeSeriesSplit(4)
 XGB = dict(n_estimators=500, max_depth=3, learning_rate=0.03, subsample=0.7, colsample_bytree=0.7,
            min_child_weight=20, reg_lambda=5.0, gamma=1.0, tree_method="hist", n_jobs=-1, random_state=42)
@@ -83,22 +86,15 @@ def mk(kind):
 
 
 # ── 0) РЯЗАНЕ НА FEATURES ──
-base = [c for c in all40 if c not in ("diff_168_336",)]                            # без точната комбинация
+base = [c for c in all44 if c not in ("diff1",)]                                   # без точната комбинация (diff1=lag1−lag2)
 Dall = F[base+["load_actual_mw"]].dropna(); yt = Dall["load_actual_mw"].values
-if len(Dall) == 0:                                                                  # няма пълни редове → твърде къса история
-    raise SystemExit(
-        "Няма НИТО един пълен ред във features_1week_long (всички редове съдържат NaN).\n"
-        "Най-вероятно lag8760 (1г warmup) надхвърля наличната история — актуалното метео\n"
-        "(weather_bg_total) е по-късо от товара. Презапиши го с по-дълъг прозорец, напр.:\n"
-        "  python tools/scrapers/scrape_weather_bulgaria.py 2022-09-01 <today>\n"
-        "после: transform_1_week_forecast_local_time.py → feature_builder_1w.py (S3 по подразбиране).")
 Z = (Dall[base]-Dall[base].mean())/Dall[base].std()
 ols0 = sm.OLS(yt, sm.add_constant(Z.values)).fit(cov_type="HAC", cov_kwds={"maxlags": NWLAG})
 pval = pd.Series(ols0.pvalues[1:], index=base)
 corr = Dall[base].corrwith(Dall["load_actual_mw"])
 drop = [c for c in base if (pval[c] >= 0.05) and (abs(corr[c]) < 0.20)]            # незначим И |corr|<0.2
 cols = [c for c in base if c not in drop]
-print(f"РЯЗАНЕ: 40 → без diff (39) → махнати по критерий [{len(drop)}]: {', '.join(drop)}")
+print(f"РЯЗАНЕ: 44 → без diff1 (43) → махнати по критерий [{len(drop)}]: {', '.join(drop)}")
 print(f"ОСТАВАТ {len(cols)} features\n")
 
 
@@ -121,11 +117,11 @@ def wfo(kind, columns):
 
 
 MODELS = ["Ridge", "Lasso", "ElasticNet", "XGBoost"]
-print("WFO 4 модела (168ч)..."); preds = {}; trmae = {}
+print("WFO 4 модела (1ч напред)..."); preds = {}; trmae = {}
 for k in MODELS: preds[k], trmae[k] = wfo(k, cols); print(f"  {k} ✓")
 
 D = pd.DataFrame({"y": F["load_actual_mw"], **{k: preds[k] for k in MODELS}, "naive": F["naive"]}).dropna()
-y = D["y"].values; n = len(D); hour = D.index.hour.values
+y = D["y"].values; n = len(D)
 def met(p, k):
     e = p-y; R2 = 1-(e**2).sum()/((y-y.mean())**2).sum()
     return dict(MAE=np.abs(e).mean(), RMSE=np.sqrt((e**2).mean()), MAPE=(np.abs(e)/y).mean()*100,
@@ -145,9 +141,9 @@ def save_table(df, path, title, figsize):
     plt.tight_layout(); plt.savefig(path, dpi=150, bbox_inches="tight"); plt.close()
 
 
-# 1) метрики (+ peak-hour: грешка в дневния максимум на товара)
+# 1) метрики (+ peak-hour)
 Dd = D.copy(); Dd["date"] = Dd.index.date
-peak_ix = Dd.groupby("date")["y"].idxmax()                     # часът на дневния пик (по реален товар)
+peak_ix = Dd.groupby("date")["y"].idxmax()
 P = D.loc[peak_ix]; yp = P["y"].values
 T = {}
 for nm in MODELS+["naive"]:
@@ -157,12 +153,12 @@ for nm in MODELS+["naive"]:
              "overfit": f"{m['MAE']/tr:.2f}" if tr else "—", "RMSE": f"{m['RMSE']:.1f}",
              "MAPE%": f"{m['MAPE']:.2f}", "peak MAE": f"{pe.mean():.1f}", "peak MAPE%": f"{(pe/yp).mean()*100:.2f}",
              "R²": f"{m['R2']:.4f}", "adjR²": f"{m['adjR2']:.4f}", "bias": f"{m['bias']:+.1f}",
-             "vs naive": f"{(nv_mae-m['MAE'])/nv_mae*100:+.1f}%"}
+             "vs persist": f"{(nv_mae-m['MAE'])/nv_mae*100:+.1f}%"}
 save_table(pd.DataFrame(T).T, FIG/"pipeline_metrics.png",
-           f"L1 1седмица 168ч ({len(cols)} ft) — 4 модела vs naive (тест {D.index.min().date()}→{D.index.max().date()}, n={n}) · peak=дневен пик", (15, 4))
-print("1) метрики (+ peak) ✓")
+           f"L1 1ЧАС напред ({len(cols)} ft) — 4 модела vs persistence(lag1) (тест {D.index.min().date()}→{D.index.max().date()}, n={n})", (15, 4))
+print("1) метрики ✓")
 
-# ── значимост/importance/корелации (пълни данни, орязан сет) ──
+# ── значимост/importance/корелации ──
 Dc = F[cols+["load_actual_mw"]].dropna(); yc = Dc["load_actual_mw"].values
 Zc = (Dc[cols]-Dc[cols].mean())/Dc[cols].std()
 olsc = sm.OLS(yc, sm.add_constant(Zc.values)).fit(cov_type="HAC", cov_kwds={"maxlags": NWLAG})
@@ -203,11 +199,11 @@ for k in MODELS:
     for b in [i for i in range(1, len(feats)) if blk(feats[i]) != blk(feats[i-1])]:
         ax2.axhline(b-.5, color="k", lw=1); ax2.axvline(b-.5, color="k", lw=1)
     ax2.set_title(f"{k}: feature×feature ({len(feats)} ползвани)")
-    fig.suptitle(f"Модел {k} — корелации (168ч)", fontsize=14, weight="bold")
+    fig.suptitle(f"Модел {k} — корелации (1ч напред)", fontsize=14, weight="bold")
     plt.savefig(FIG/f"pipeline_corr_{k}.png", dpi=150, bbox_inches="tight"); plt.close()
 print("3) per-model корелации ✓")
 
-# ── 4) ДИАГНОСТИКА: значимост (DM vs naive) + грешки ──
+# ── 4) ДИАГНОСТИКА: значимост (DM vs persistence) + грешки ──
 def nw(d, L):
     d = d-d.mean(); nn = len(d); s = d@d/nn
     for l in range(1, L+1): s += 2*(1-l/(L+1))*(d[l:]@d[:-l])/nn
@@ -219,17 +215,17 @@ D2 = {}
 for k in MODELS:
     e = (D[k]-D["y"]).values; env = (D["naive"]-D["y"]).values
     se = np.sqrt(nw(e, NWLAG)/n); bp = 2*(1-st.norm.cdf(abs(e.mean()/se)))
-    lb = acorr_ljungbox(e, lags=[H], return_df=True)["lb_pvalue"].iloc[0]
-    arch = het_arch(e, nlags=48)[1]; jb = jarque_bera(e)[1]
+    lb = acorr_ljungbox(e, lags=[24], return_df=True)["lb_pvalue"].iloc[0]
+    arch = het_arch(e, nlags=24)[1]; jb = jarque_bera(e)[1]
     adf = adfuller(e, autolag="AIC")[1]; kp = kpss(e, nlags="auto")[1]
-    D2[k] = {"DM vs naive": f"{dm_p(e, env):.1e}", "bias p(HAC)": f"{bp:.2f}",
-             "Ljung-Box(168)": f"{lb:.1e}", "ACF1": f"{acf(e,1):.2f}", "ACF168": f"{acf(e,H):.2f}",
+    D2[k] = {"DM vs persist": f"{dm_p(e, env):.1e}", "bias p(HAC)": f"{bp:.2f}",
+             "Ljung-Box(24)": f"{lb:.1e}", "ACF1": f"{acf(e,1):.2f}", "ACF24": f"{acf(e,24):.2f}",
              "ARCH p": f"{arch:.1e}", "Norm(JB) p": f"{jb:.1e}", "ADF p": f"{adf:.2f}", "KPSS p": f"{kp:.2f}"}
 save_table(pd.DataFrame(D2).T, FIG/"pipeline_diagnostics.png",
-           "Диагностика 168ч: значимост (DM vs naive, p<0.05=значимо по-добър) + грешки (Ljung/ACF=автокор · ARCH=хетероскед · JB=норм · ADF/KPSS=стац)", (14, 3.5))
+           "Диагностика 1ч: значимост (DM vs persistence, p<0.05=значимо по-добър) + грешки (Ljung/ACF=автокор · ARCH=хетероскед · JB=норм · ADF/KPSS=стац)", (14, 3.5))
 print("4) диагностика ✓")
 
-# ── CONFORMAL (Mondrian по час, всички модели) → Winkler (ПРЕДИ избора) ──
+# ── CONFORMAL (Mondrian по час) → Winkler ──
 def cq(r, a):
     r = np.sort(np.abs(r)); m = len(r)
     return r[min(int(np.ceil((m+1)*(1-a))), m)-1] if m else np.nan
@@ -274,10 +270,10 @@ save_table(pd.DataFrame(IT).T, FIG/"pipeline_intervals.png",
            "Качество на 90% Mondrian интервали (цел покритие ~90% · Winkler↓ = по-добре)", (10, 3))
 print("конформал/Winkler ✓")
 
-# ── 5) ИЗБОР: НАЙ-НИСКО MAPE + НАЙ-НИСЪК OVERFIT + НАЙ-ДОБЪР WINKLER (равни тегла, норм.) ──
+# ── 5) ИЗБОР ──
 sc_df = pd.DataFrame({k: {"MAPE": mm[k]["MAPE"], "overfit": mm[k]["MAE"]/trmae[k], "Winkler": wink[k]} for k in MODELS}).T
 def nrm(x):
-    rng = x.max()-x.min(); return (x.max()-x)/rng if rng > 0 else pd.Series(1.0, index=x.index)   # по-ниско = по-добре
+    rng = x.max()-x.min(); return (x.max()-x)/rng if rng > 0 else pd.Series(1.0, index=x.index)
 sc_df["s_MAPE"] = nrm(sc_df["MAPE"]); sc_df["s_overfit"] = nrm(sc_df["overfit"]); sc_df["s_Winkler"] = nrm(sc_df["Winkler"])
 sc_df["SCORE"] = sc_df[["s_MAPE", "s_overfit", "s_Winkler"]].mean(axis=1)
 SELECTED = sc_df["SCORE"].idxmax()
@@ -288,13 +284,13 @@ save_table(disp.astype(str), FIG/"pipeline_selection.png",
            f"Избор: норм. MAPE↓ + overfit↓ + Winkler↓ (равни тегла) → ИЗБРАН: {SELECTED}", (13, 3))
 print(f"5) избор ✓  → {SELECTED}")
 
-# ── 5b) LEARNING CURVE на избрания (train vs test MAE спрямо обема обучение) ──
+# ── 5b) LEARNING CURVE ──
 VAL_DAYS = 45
 vstart = end - pd.Timedelta(days=VAL_DAYS)
 VAL = F[(F.index >= vstart) & (F.index <= end)].dropna(subset=cols+["load_actual_mw"])
 yval = VAL["load_actual_mw"].values
 lc = []
-for sz in (30, 60, 90, 150, 240, 365, 480, 560, 700):
+for sz in (30, 60, 90, 150, 240, 365, 480, 560):
     tr = F[(F.index >= vstart-pd.Timedelta(days=sz)) & (F.index < vstart)].dropna(subset=cols+["load_actual_mw"])
     if len(tr) < 500: continue
     ytr = tr["load_actual_mw"].values; m = mk(SELECTED)
@@ -309,21 +305,18 @@ plt.figure(figsize=(10, 6))
 plt.plot(LC["days"], LC["train"], "o-", color="#2563eb", lw=2, label="train MAE (in-sample)")
 plt.plot(LC["days"], LC["val"], "s-", color="#dc2626", lw=2, label=f"test MAE (последни {VAL_DAYS} дни)")
 plt.fill_between(LC["days"], LC["train"], LC["val"], alpha=.12, color="gray")
-for _, r in LC.iterrows(): plt.annotate(f"{r['val']/r['train']:.2f}", (r["days"], (r["train"]+r["val"])/2), fontsize=7, ha="center", color="gray")
 plt.xlabel("дни обучение (обем train)"); plt.ylabel("MAE (MW)")
-plt.title(f"{SELECTED} (168ч) — Learning curve (train vs test) · сивото = overfit gap")
+plt.title(f"{SELECTED} (1ч напред) — Learning curve (train vs test)")
 plt.legend(); plt.grid(alpha=.3)
 plt.savefig(FIG/f"pipeline_learning_curve_{SELECTED}.png", dpi=150, bbox_inches="tight"); plt.close()
-print(f"5b) learning curve ✓")
+print("5b) learning curve ✓")
 
-# ── 6) ФИНАЛНА ГРАФИКА за избрания: scatter(adjR²) + хистограма + actual/pred + Mondrian 90% ──
-R = Rall[SELECTED]                                                                # вече сметнато по-горе
+# ── 6) ФИНАЛНА ГРАФИКА (часово ниво — РЕАЛНАТА метрика) ──
+R = Rall[SELECTED]
 yy, pp = R["y"].values, R["p"].values; ee = pp-yy; nR = len(R)
 r2 = 1-(ee**2).sum()/((yy-yy.mean())**2).sum(); adj = 1-(1-r2)*(nR-1)/(nR-len(cols)-1)
 mae = np.abs(ee).mean(); cov = R["in"].mean()*100
-
 fig = plt.figure(figsize=(14, 11))
-# (a) scatter + линия + adjR²
 ax1 = fig.add_subplot(2, 2, 1)
 ax1.scatter(yy, pp, s=5, alpha=.25, color="#2563eb", edgecolors="none")
 lim = [min(yy.min(), pp.min()), max(yy.max(), pp.max())]; ax1.plot(lim, lim, "k-", lw=1.2, label="y=x")
@@ -331,25 +324,73 @@ b1, b0 = np.polyfit(yy, pp, 1); ax1.plot(lim, [b0+b1*lim[0], b0+b1*lim[1]], "r--
 ax1.set_xlabel("Actual (MW)"); ax1.set_ylabel("Predicted (MW)"); ax1.set_aspect("equal", "box")
 ax1.set_title(f"{SELECTED}: Actual vs Predicted · R²={r2:.3f} · adjR²={adj:.3f} · MAE={mae:.1f}")
 ax1.legend(fontsize=8); ax1.grid(alpha=.3)
-# (b) хистограма на грешките (не-нормалност → защо Mondrian)
 ax2 = fig.add_subplot(2, 2, 2)
 ax2.hist(ee, bins=60, color="#16a34a", alpha=.7, density=True)
 xs = np.linspace(ee.min(), ee.max(), 200); ax2.plot(xs, st.norm.pdf(xs, ee.mean(), ee.std()), "r-", lw=1.5, label="нормално (за справка)")
-ax2.set_title(f"Разпределение на грешките · skew={st.skew(ee):+.2f} kurt={st.kurtosis(ee)+3:.1f} (не-нормално → Mondrian)")
+ax2.set_title(f"Разпределение на грешките · skew={st.skew(ee):+.2f} kurt={st.kurtosis(ee)+3:.1f}")
 ax2.set_xlabel("грешка (MW)"); ax2.legend(fontsize=8); ax2.grid(alpha=.3)
-# (c) времеви ред actual vs predicted + 90% Mondrian лента
 ax3 = fig.add_subplot(2, 1, 2)
-w0 = pd.Timestamp("2026-01-12", tz=LOCAL); W = R[(R.index >= w0) & (R.index < w0+pd.Timedelta(days=21))]
+w0 = pd.Timestamp("2026-01-12", tz=LOCAL); W = R[(R.index >= w0) & (R.index < w0+pd.Timedelta(days=4))]
 ax3.fill_between(W.index, W["lo"], W["hi"], color="#fca5a5", alpha=.45, label="90% Mondrian интервал")
-ax3.plot(W.index, W["p"], color="#dc2626", lw=1.1, ls="--", label="Predicted")
+ax3.plot(W.index, W["p"], color="#dc2626", lw=1.1, ls="--", label="Predicted (1ч напред)")
 ax3.plot(W.index, W["y"], color="#111", lw=1.3, label="Actual")
-out = W[~W["in"]]; ax3.scatter(out.index, out["y"], s=20, color="#1d4ed8", zorder=5, label=f"извън лентата")
-ax3.set_title(f"{SELECTED} (168ч): Actual vs Predicted + 90% Mondrian интервал (покритие {cov:.1f}%)")
+ax3.set_title(f"{SELECTED} (1ч напред): Actual vs Predicted + 90% Mondrian (покритие {cov:.1f}%)")
 ax3.set_ylabel("товар (MW)"); ax3.legend(loc="upper right", fontsize=8); ax3.grid(alpha=.3)
-fig.suptitle(f"ИЗБРАН МОДЕЛ (1 СЕДМИЦА, 168ч): {SELECTED}", fontsize=15, weight="bold")
+fig.suptitle(f"ИЗБРАН МОДЕЛ (1 ЧАС напред): {SELECTED}", fontsize=15, weight="bold")
 plt.tight_layout(); plt.savefig(FIG/f"pipeline_final_{SELECTED}.png", dpi=150, bbox_inches="tight"); plt.close()
-print(f"6) финална графика ✓ (Mondrian покритие {cov:.1f}%)\n\nГОТОВО. Избран модел: {SELECTED}")
+print(f"6) финална графика ✓ (часово покритие {cov:.1f}%)")
+
+# ── 7) РАМПА към 15-мин: закотвена в реалната текуща стойност, линеен преход към 1ч-прогнозата ──
+cur = F["lag1"].reindex(R.index)                                # реалната текуща стойност (актуал в T, гейт)
+ramp_rows = []
+for ts in R.index:
+    a = cur.loc[ts]; f = R.loc[ts, "p"]                          # старт (реален) → край (1ч-прогноза)
+    if not (np.isfinite(a) and np.isfinite(f)): continue
+    for q in (1, 2, 3, 4):                                       # 15-мин стъпки в интервала (ts-1ч, ts]
+        tq = ts - pd.Timedelta(minutes=60-15*q)                  # ts-45, ts-30, ts-15, ts
+        ramp_rows.append((tq, a + (q/4.0)*(f-a)))
+RAMP = pd.DataFrame(ramp_rows, columns=["ts", "p15"]).set_index("ts").sort_index()
+RAMP = RAMP[~RAMP.index.duplicated(keep="last")]
+# синтетичен 15-мин актуал (само за визуален контекст — НЕ метрика).
+# Няма отделен 15-мин transform → ако master-ът липсва в S3, прескачаме линията.
+try:
+    M15 = rl(MASTER_15MIN_KEY)
+    syn = M15["load_actual_mw"]
+except Exception:
+    syn = None
+    print("  (15-мин master липсва в S3 — синтетичната 15-мин линия се прескача)")
+
+# фигура: горе ~2 дни часово (реалната метрика), долу ~12ч zoom на 15-мин рампата
+fig = plt.figure(figsize=(15, 10))
+z0 = pd.Timestamp("2026-01-13 00:00", tz=LOCAL)
+axA = fig.add_subplot(2, 1, 1)
+Wd = R[(R.index >= z0) & (R.index < z0+pd.Timedelta(days=2))]
+nv = F["naive"].reindex(Wd.index)
+axA.plot(Wd.index, Wd["y"], color="#111", lw=1.6, label="Actual (часов)")
+axA.plot(Wd.index, Wd["p"], color="#dc2626", lw=1.3, ls="--", marker="o", ms=3, label="1ч-напред прогноза")
+axA.plot(Wd.index, nv, color="#6b7280", lw=1.0, ls=":", label="persistence(lag1)")
+axA.set_title(f"ЧАСОВО (реалната, измеримата метрика) · {SELECTED} 1ч-напред MAE={mae:.1f} vs persistence {nv_mae:.1f}")
+axA.set_ylabel("товар (MW)"); axA.legend(loc="upper right", fontsize=8); axA.grid(alpha=.3)
+
+axB = fig.add_subplot(2, 1, 2)
+z1 = pd.Timestamp("2026-01-13 06:00", tz=LOCAL); z1e = z1+pd.Timedelta(hours=12)
+Rr = RAMP[(RAMP.index >= z1) & (RAMP.index <= z1e)]
+Hh = R[(R.index >= z1) & (R.index <= z1e)]
+if syn is not None:
+    Ss = syn[(syn.index >= z1) & (syn.index <= z1e)]
+    axB.plot(Ss.index, Ss.values, color="#9ca3af", lw=1.0, label="синтетичен 15-мин актуал (НЕ метрика)")
+axB.plot(Rr.index, Rr["p15"], color="#2563eb", lw=1.4, marker="o", ms=3, label="15-мин РАМПА (закотвена в реалната тек. стойност)")
+axB.plot(Hh.index, Hh["p"], color="#dc2626", lw=0, marker="s", ms=7, label="1ч-напред прогноза (краен възел)")
+axB.scatter(cur.reindex(Hh.index).index - pd.Timedelta(hours=1), cur.reindex(Hh.index).values,
+            color="#111", s=30, zorder=5, label="реална текуща стойност (котва)")
+axB.set_title("15-МИН РАМПА (zoom 12ч): линеен преход реална_стойност → 1ч-прогноза · под-часовото е ДОПУСКАНЕ, не измерено")
+axB.set_ylabel("товар (MW)"); axB.legend(loc="upper right", fontsize=8); axB.grid(alpha=.3)
+fig.suptitle(f"1 ЧАС НАПРЕД → 15-МИН РАМПА · избран {SELECTED}", fontsize=15, weight="bold")
+plt.tight_layout(); plt.savefig(FIG/f"pipeline_15min_ramp_{SELECTED}.png", dpi=150, bbox_inches="tight"); plt.close()
+print("7) 15-мин рампа ✓")
+print(f"\nГОТОВО. Избран модел: {SELECTED} · 1ч-напред MAE={mae:.1f} (persistence {nv_mae:.1f})")
+print("⚠️ Часовата 1ч-напред метрика е РЕАЛНА; 15-мин рампата е закотвено ДОПУСКАНЕ (няма реален 15-мин товар).")
 
 if DO_UPLOAD:
-    # Качи цялата папка → s3://.../data/results/1week/<png>
+    # Качи цялата папка → s3://.../data/results/15min/<png>
     upload(FIG, prefix="data/results")

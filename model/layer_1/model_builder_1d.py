@@ -31,8 +31,8 @@ from sklearn.model_selection import TimeSeriesSplit
 from xgboost import XGBRegressor
 import warnings; warnings.filterwarnings("ignore")
 
-# Make the shared tools/ dir importable (for upload_s3) from model/.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+# Make the shared tools/ dir importable (for upload_s3) from model/layer_1/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 from upload_s3 import read_csv, upload  # noqa: E402
 
 try: sys.stdout.reconfigure(encoding="utf-8")
@@ -41,7 +41,7 @@ except Exception: pass
 DO_UPLOAD = True  # always persist; backend (s3/local) chosen in upload_s3
 LOCAL = "Europe/Sofia"
 # PNG-овете отиват тук локално, после се качват в S3 под data/results/1d/.
-FIG = Path(__file__).parent/"results"/"1d"; FIG.mkdir(parents=True, exist_ok=True)
+FIG = Path(__file__).resolve().parents[1]/"results"/"1d"; FIG.mkdir(parents=True, exist_ok=True)
 MASTER_KEY = "data/processed/master_hourly_long_forecasted_weather.csv"
 # feature builder-ът пише ниво ИЛИ диференциран таргет — пробвай нивовия, после diff24.
 FEATURES_KEYS = ["data/processed/features_1h_long.csv",

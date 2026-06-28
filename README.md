@@ -29,6 +29,9 @@ case-predict-electricity-prices/
 ├── README.md                       ← you are here: the pipeline
 ├── run_pipeline.py                 ← run ALL 4 stages end to end
 ├── run_no_scrape.py                ← run everything EXCEPT scrapers (transform → features → model)
+├── regen_report.py                 ← rebuild the HTML report locally + open it (no upload)
+├── open_report.py                  ← open the report (pulls from S3 if no local copy)
+├── upload_report.py                ← publish the local report to S3
 ├── requirements.txt                ← Python dependencies
 ├── LICENSE                         ← MIT
 │
@@ -49,24 +52,33 @@ case-predict-electricity-prices/
 │   │   └── scrape_days_off_bulgaria.py     ← weekends + public holidays calendar
 │   │
 │   ├── clean-and-transform/        ← STAGE 2: S3 data/raw/ → S3 data/processed/ (masters)
-│   │   ├── run_all.py              ← run every transform in sequence
-│   │   ├── transform_1_day_forecast_local_time.py   ← 24h master (forecast weather)
-│   │   ├── transform_1_week_forecast_local_time.py  ← 168h master (actual weather, lag168)
-│   │   └── transform_derive_available_capacity.py   ← available capacity per fuel
+│   │   ├── run_all.py              ← run the transforms for a layer (default layer_1)
+│   │   ├── transform_1_day_forecast_local_time.py   ← L1 24h master (forecast weather)
+│   │   ├── transform_1_week_forecast_local_time.py  ← L1 168h master (actual weather, lag168)
+│   │   ├── transform_derive_available_capacity.py   ← L1 available capacity per fuel
+│   │   └── transform_supply_master.py               ← L2 supply master (generation + net imports + drivers)
 │   │
 │   └── features/                   ← STAGE 3: masters → S3 data/processed/ (feature tables)
-│       ├── run_all.py              ← run every feature builder in sequence
-│       ├── feature_builder_1d.py       ← day-ahead (24h) features, lags ≥24h
-│       ├── feature_builder_1w.py       ← week-ahead (168h) features, lags ≥168h
-│       └── feature_builder_15min.py    ← 1h-ahead nowcast features, short lags
+│       ├── run_all.py              ← run the feature builders for a layer (default layer_1)
+│       ├── layer_1/                    ← Layer 1 (consumption/load) features
+│       │   ├── feature_builder_1d.py       ← day-ahead (24h) features, lags ≥24h
+│       │   ├── feature_builder_1w.py       ← week-ahead (168h) features, lags ≥168h
+│       │   └── feature_builder_15min.py    ← 1h-ahead nowcast features, short lags
+│       ├── layer_2/                    ← Layer 2 (supply) features
+│       │   └── feature_builder_supply.py   ← weather + calendar + outage-dummy predictors
+│       └── layer_3/                    ← Layer 3 (price) — placeholder
 │
 ├── model/                          ← STAGE 4: features → S3 data/results/ (figures + report)
-│   ├── run_all.py                  ← train all horizons + build & open the report
-│   ├── model_builder_1d.py         ← 24h: 4 models vs ЕСО/naive
-│   ├── model_builder_1w.py         ← 168h: 4 models vs naive
-│   ├── model_builder_15min.py      ← 1h-ahead nowcast (+15-min ramp) vs persistence
-│   └── build_report.py             ← all result PNGs → one self-contained index.html
-│                                      (1d as a Bulgarian narrative, others as figure galleries)
+│   ├── run_all.py                  ← run the model stage for a layer (default layer_1)
+│   ├── build_report.py             ← all result PNGs (Layer 1 + Layer 2) → one self-contained index.html
+│   │                                  (1d as a Bulgarian narrative, others as figure galleries)
+│   ├── layer_1/                        ← Layer 1 (consumption/load): one builder per horizon
+│   │   ├── model_builder_1d.py         ← 24h: 4 models vs ЕСО/naive
+│   │   ├── model_builder_1w.py         ← 168h: 4 models vs naive
+│   │   └── model_builder_15min.py      ← 1h-ahead nowcast (+15-min ramp) vs persistence
+│   └── layer_2/                        ← Layer 2 (supply): models + figures
+│       ├── model_builder_supply.py     ← 6 models + naive on the supply features → data/results/supply/
+│       └── supply_side.py              ← original all-in-one script (kept for reference, not run)
 │
 └── data/                           ← provided seed data (snapshots, go stale)
 ```
@@ -103,17 +115,22 @@ credentials and `S3_BUCKET` there. All scripts follow the same conventions:
   overriding `.env`. With no flag you get the `.env` default (or `s3`).
 - **`run_all.py`** — an orchestrator per stage. It runs each script as its
   own subprocess, so one failure (missing API key, network blip, missing
-  input) is logged and skipped rather than aborting the batch. It forwards
-  any arguments to every step (so `run_all.py --local` runs the whole stage
-  on the local backend) and exits with the number of failed steps.
+  input) is logged and skipped rather than aborting the batch. It takes the
+  **layer** as its first positional argument (default `layer_1`) and forwards
+  any other arguments to every step (so `run_all.py layer_2 --local` runs that
+  layer on the local backend); it exits with the number of failed steps.
 - **`run_pipeline.py`** — the top-level orchestrator that chains all four
-  stage `run_all.py`s in order. `--from STAGE` resumes mid-pipeline (handy
-  since scraping is the slow part), `--local`/`--s3` pick the backend,
-  `--no-open` is forwarded only to the model stage.
+  stages in order, running the transform/features/model stages for **every
+  built layer** (Layer 1 + Layer 2) so a full run refreshes the whole report.
+  The model stage runs `layer_2` before `layer_1` on purpose, so the report
+  (built at the end of the `layer_1` model run) includes fresh supply figures.
+  `--from STAGE` resumes mid-pipeline (handy since scraping is the slow part),
+  `--local`/`--s3` pick the backend, `--no-open` is forwarded only to the model
+  stage.
 - **`run_no_scrape.py`** — runs everything **except** the scrapers
-  (transform → features → model), in order, on top of the raw data already
-  in the backend. Uses the default backend (or `--local`/`--s3`); opens the
-  report at the end unless `--no-open`.
+  (transform → features → model), in order, for **every built layer**, on top
+  of the raw data already in the backend. Uses the default backend (or
+  `--local`/`--s3`); opens the report once at the end unless `--no-open`.
 
 Each script also runs perfectly well on its own — the `run_all.py`s and
 `run_pipeline.py` are just convenience wrappers.
@@ -144,8 +161,22 @@ python run_pipeline.py
 #    …or run it one stage at a time:
 python tools/scrapers/run_all.py            # STAGE 1 → data/raw/
 python tools/clean-and-transform/run_all.py # STAGE 2 → data/processed/ (masters)
-python tools/features/run_all.py            # STAGE 3 → data/processed/ (features)
-python model/run_all.py                     # STAGE 4 → data/results/ (figures + report)
+python tools/features/run_all.py            # STAGE 3 → data/processed/ (features, layer_1)
+python model/run_all.py                     # STAGE 4 → data/results/ (figures + report, layer_1)
+```
+
+Stages 2–4 are organised **per layer**; the transform/feature/model `run_all.py`
+take the layer as their first positional argument (default `layer_1`).
+`run_pipeline.py` and `run_no_scrape.py` run **every built layer** automatically
+(Layer 1 + Layer 2). You can also run a single layer's stages by hand, e.g. the
+whole Layer 2 (supply) chain:
+
+```bash
+python model/run_all.py layer_1                       # just Layer 1 models + report
+
+python tools/clean-and-transform/run_all.py layer_2   # Layer 2: supply master
+python tools/features/run_all.py layer_2              # Layer 2: supply features
+python model/run_all.py layer_2                       # Layer 2: supply models → figures (in the report)
 ```
 
 `run_pipeline.py --from features` resumes from a later stage (skips the
@@ -186,14 +217,17 @@ the upload.
 ## Stage 2 — Clean & transform (`tools/clean-and-transform/`)
 
 These read raw inputs **back from S3** (`data/raw/`), build the canonical
-masters, and (by default) push them to `data/processed/`. Order
-matters — see `run_all.py`'s `STEPS`.
+masters, and (by default) push them to `data/processed/`. Like Stages 3–4 they
+are grouped **per layer**; `run_all.py` takes the layer as its first positional
+argument (default `layer_1`), e.g. `python tools/clean-and-transform/run_all.py layer_2`.
+Order matters within a layer — see `run_all.py`'s `LAYERS`.
 
-| Script | What it builds |
-| --- | --- |
-| **`transform_1_day_forecast_local_time.py`** | The **24h master**. Joins load actual + ESO load forecast (ENTSO-E), the 1-day-ahead **forecasted** weather, and the days-off calendar; canonicalises in UTC; hourly grid from 2024-02-17; `is_day_off` by **local** date; trims to where real load exists; converts to local BG time. Output: `master_hourly_long_forecasted_weather.csv`. |
-| **`transform_1_week_forecast_local_time.py`** | The **168h master**. Same joins but with **actual** weather (used as `lag168` downstream, since a day-ahead forecast isn't available a week out), assembled directly in local BG time over the full load history (from ~2022-09). Output: `master_1week_long.csv`. |
-| **`transform_derive_available_capacity.py`** | Hourly **available** generation capacity per fuel type — since ENTSO-E only publishes nameplate capacity yearly. `available = nameplate(year) − Σ outage MW lost`, joined 1:1 onto the generation timeline. |
+| Script | Layer | What it builds |
+| --- | --- | --- |
+| **`transform_1_day_forecast_local_time.py`** | 1 | The **24h master**. Joins load actual + ESO load forecast (ENTSO-E), the 1-day-ahead **forecasted** weather, and the days-off calendar; canonicalises in UTC; hourly grid from 2024-02-17; `is_day_off` by **local** date; trims to where real load exists; converts to local BG time. Output: `master_hourly_long_forecasted_weather.csv`. |
+| **`transform_1_week_forecast_local_time.py`** | 1 | The **168h master**. Same joins but with **actual** weather (used as `lag168` downstream, since a day-ahead forecast isn't available a week out), assembled directly in local BG time over the full load history (from ~2022-09). Output: `master_1week_long.csv`. |
+| **`transform_derive_available_capacity.py`** | 1 | Hourly **available** generation capacity per fuel type — since ENTSO-E only publishes nameplate capacity yearly. `available = nameplate(year) − Σ outage MW lost`, joined 1:1 onto the generation timeline. |
+| **`transform_supply_master.py`** | 2 | The **supply master**. `supply = Σ generation-per-type + net_position`; joins actual weather, the days-off calendar (`is_weekend`, `is_holiday`), and outage dummies (`prod_maint`, `gen_maint`, `gen_outages`) derived from ENTSO-E unavailability onto one hourly local-BG grid. Output: `master_supply_long.csv`. |
 
 > `timezone_convertor.py` (the original 24h master builder) is kept on disk
 > but **superseded** by `transform_1_day_forecast_local_time.py`, which
@@ -217,50 +251,120 @@ time (`Europe/Sofia`). Both carry `load_actual_mw`, `load_forecast_mw`
 
 ## Stage 3 — Features (`tools/features/`)
 
-Each feature builder reads a master **back from S3**, derives the leakage-
-safe predictor table for one forecast horizon, and (by default) pushes
-it to `data/processed/`. Each adds load lags, weather, and calendar blocks
-honest to its gate, and prints an ADF stationarity check.
+Feature builders are grouped **per layer** under `tools/features/layer_<n>/`.
+**Layers 1 (consumption) and 2 (supply)** have builders; `layer_3/` (price) is a
+placeholder. Each builder reads a master **back from S3**, derives the
+leakage-safe predictor table, and (by default) pushes it to `data/processed/`.
 
-| Script | Horizon | Builds | Key idea |
+`run_all.py` takes the layer as its first positional argument (default
+`layer_1`), e.g. `python tools/features/run_all.py layer_2`.
+
+| Script | Layer / Horizon | Builds | Key idea |
 | --- | --- | --- | --- |
-| **`feature_builder_1d.py`** | 24h (day-ahead) | `features_1h_long.csv` (or `…_diff24.csv` if the level is non-stationary) | Load lags **≥24h**, day-ahead forecast weather for *T*, calendar. |
-| **`feature_builder_1w.py`** | 168h (week-ahead) | `features_1week_long.csv` | Load lags **≥168h**, weather as `lag168`, calendar. Needs ~1y warmup (`lag8760`). |
-| **`feature_builder_15min.py`** | 1h-ahead nowcast | `features_1h_ahead_long.csv` | **Short** lags (`lag1`=persistence, `lag2/3`, `diff1`) — the source of skill. Reuses the **24h master** (no separate transform). |
+| **`layer_1/feature_builder_1d.py`** | 1 · 24h (day-ahead) | `features_1h_long.csv` (or `…_diff24.csv` if the level is non-stationary) | Load lags **≥24h**, day-ahead forecast weather for *T*, calendar. |
+| **`layer_1/feature_builder_1w.py`** | 1 · 168h (week-ahead) | `features_1week_long.csv` | Load lags **≥168h**, weather as `lag168`, calendar. Needs ~1y warmup (`lag8760`). |
+| **`layer_1/feature_builder_15min.py`** | 1 · 1h-ahead nowcast | `features_1h_ahead_long.csv` | **Short** lags (`lag1`=persistence, `lag2/3`, `diff1`) — the source of skill. Reuses the **24h master**. |
+| **`layer_2/feature_builder_supply.py`** | 2 · supply | `features_supply_long.csv` | Selects the honest supply predictors from the supply master — 9 weather vars + calendar (`is_weekend`, `is_holiday`) + outage dummies (`prod_maint`, `gen_maint`, `gen_outages`) — alongside the `supply` target. |
 
 ---
 
 ## Stage 4 — Model (`model/`)
 
-Each model builder reads a feature table **back from S3**, runs a
+The model stage is organised **per layer** under `model/layer_<n>/`, run via
+`model/run_all.py` with the layer as its first positional argument (default
+`layer_1`):
+
+```bash
+python model/run_all.py            # Layer 1 (default) — consumption/load
+python model/run_all.py layer_1    # same, explicit
+python model/run_all.py layer_2    # Layer 2 — supply side (trains supply models)
+```
+
+### Layer 1 — consumption/load (`model/layer_1/`)
+
+Each Layer 1 model builder reads a feature table **back from S3**, runs a
 walk-forward (rolling-origin) evaluation of four models
 (Ridge / Lasso / ElasticNet / XGBoost) against a horizon-appropriate
 benchmark, and (by default) pushes its figures to
-`data/results/<horizon>/`. `build_report.py` then pulls every result PNG
-back from S3 and bakes them into one **self-contained** `index.html`
-(images base64-embedded), uploaded to `data/results/index.html`.
+`data/results/<horizon>/`. `build_report.py` (kept at `model/`, not per-layer)
+then pulls every result PNG back from S3 and bakes them into one
+**self-contained** `index.html` (images base64-embedded), uploaded to
+`data/results/index.html`.
 
 | Script | Horizon | Benchmark | Figures → `data/results/…` |
 | --- | --- | --- | --- |
-| **`model_builder_1d.py`** | 24h | ЕСО + naive(lag24) | `1d/` — metrics, significance, per-model corr ×4, diagnostics, intervals, selection, learning curve, final |
-| **`model_builder_1w.py`** | 168h | naive(lag168) | `1week/` — same set (selection picks the model) |
-| **`model_builder_15min.py`** | 1h-ahead | persistence(lag1) | `15min/` — same set **+** a synthetic 15-min ramp plot |
+| **`layer_1/model_builder_1d.py`** | 24h | ЕСО + naive(lag24) | `1d/` — metrics, significance, per-model corr ×4, diagnostics, intervals, selection, learning curve, final |
+| **`layer_1/model_builder_1w.py`** | 168h | naive(lag168) | `1week/` — same set (selection picks the model) |
+| **`layer_1/model_builder_15min.py`** | 1h-ahead | persistence(lag1) | `15min/` — same set **+** a synthetic 15-min ramp plot |
 | **`build_report.py`** | — | — | `index.html` — all of the above in one page |
 
-`build_report.py` renders the **1d** horizon not as a flat gallery but as a
-self-contained **Bulgarian narrative** that follows the Layer-1 story —
-*what we test → which data → which method → results → takeaway* — with the
-1d figures embedded at the right points. The page stays a single vertical
-scroll (not a sideways slide deck). The `1week` / `15min` horizons follow as
-ordered figure galleries. It pulls the PNGs from S3, or falls back to the
-local `results/**/*.png` when S3 isn't configured.
+`build_report.py` (kept at `model/`, shared by all layers) renders the **1d**
+horizon not as a flat gallery but as a self-contained **Bulgarian narrative** that
+follows the Layer-1 story — *what we test → which data → which method → results →
+takeaway* — with the 1d figures embedded at the right points. The page stays a
+single vertical scroll (not a sideways slide deck). The `1week` / `15min` horizons
+and the **Layer 2 (supply)** section follow as their own sections. It pulls the
+PNGs from S3, or falls back to the local `results/**/*.png` when S3 isn't configured.
+The report is the **end result and covers every built layer** (Layer 1 + Layer 2).
 
-`model/run_all.py` runs the three builders then `build_report.py`, and
-**opens the report** in your browser when done (`--no-open` to skip, e.g.
-on a headless box). Conformal 90% prediction intervals are Mondrian
-(per-hour) calibrated; the 1h-ahead "15-min ramp" is an anchored
-*assumption* (linear steps from the real current value to the 1h forecast),
-clearly **not** a measured 15-min skill — there is no real 15-min load.
+`python model/run_all.py` (Layer 1) runs the three builders then
+`build_report.py`, and **opens the report** in your browser when done
+(`--no-open` to skip, e.g. on a headless box). Conformal 90% prediction
+intervals are Mondrian (per-hour) calibrated; the 1h-ahead "15-min ramp" is an
+anchored *assumption* (linear steps from the real current value to the 1h
+forecast), clearly **not** a measured 15-min skill — there is no real 15-min load.
+
+### Layer 2 — supply side (`model/layer_2/`)
+
+Layer 2 forecasts **supply** = total generation (all production types) + net
+imports (`net_position`). It now follows the **same staged structure as Layer 1**
+— the original all-in-one script was split into the standard stages:
+
+- **transform** — `tools/clean-and-transform/transform_supply_master.py` →
+  `data/processed/master_supply_long.csv`
+- **features** — `tools/features/layer_2/feature_builder_supply.py` →
+  `data/processed/features_supply_long.csv`
+- **model** — `model/layer_2/model_builder_supply.py` →
+  `data/results/supply/*.png`
+
+`model_builder_supply.py` reads the feature table back from S3, does a single
+chronological split (train < 2025-10-01, test after), standardises, and trains
+**six models** (Lasso / Ridge / ElasticNet / DecisionTree / RandomForest /
+GradientBoosting) plus a **naive** benchmark, writing a full-series plot, a
+test actual-vs-predictions plot, and a metrics table. The supply figures **are
+included in the HTML report** (their own *Layer 2* section). The linear models
+beat naive on the test set; the trees overfit (high train R², ≈0 test R²).
+
+`run_pipeline.py` / `run_no_scrape.py` run Layer 2 as part of a full run, but you
+can also run just the Layer 2 chain on demand:
+
+```bash
+python tools/clean-and-transform/run_all.py layer_2   # supply master
+python tools/features/run_all.py layer_2              # supply features
+python model/run_all.py layer_2                       # supply models + figures
+```
+
+The original `model/layer_2/supply_side.py` is kept on disk for reference but is
+no longer run. (Its data reads used hardcoded local paths; the split scripts read
+everything from S3 instead.)
+
+### Working on the report
+
+Three root-level helpers let you iterate on the report (`model/build_report.py`)
+without re-running the models or touching S3 by accident:
+
+```bash
+python regen_report.py     # rebuild index.html locally from the S3 figures + open it — NO upload
+python open_report.py      # just open the report (downloads from S3 if there's no local copy)
+python upload_report.py    # publish your local report to S3 (data/results/index.html)
+```
+
+The typical loop: edit `model/build_report.py` → `python regen_report.py` to
+preview → repeat → `python upload_report.py` to publish when happy. All three
+take `--s3` / `--local` to force a backend (e.g. `regen_report.py --local` reads
+the figures from `./local_store/` instead of S3). Under the hood `regen_report.py`
+runs `build_report.py --no-upload`, which reads the figures from the active
+backend but writes only the local `index.html`.
 
 ---
 
@@ -295,11 +399,19 @@ use `--local`.
 
 The pipeline targets the three forecasting layers the case asks for —
 **consumption** (Layer 1), **supply** (Layer 2), and **price** (Layer 3),
-each at 15-minute, 24-hour, and 1-week horizons. Stage 4 currently
-implements **Layer 1 (consumption/load)** at all three horizons
-(`model/`); Layers 2–3 reuse the same scrape → transform → features →
-model scaffolding. The conceptual framing and required deliverables live in
-the docs:
+each at 15-minute, 24-hour, and 1-week horizons.
+
+- **Layer 1 (consumption/load)** runs through the whole scrape → transform →
+  features → model pipeline at all three horizons (`tools/features/layer_1/`,
+  `model/layer_1/`) and feeds the HTML report.
+- **Layer 2 (supply)** follows the **same staged structure** —
+  `transform_supply_master.py` → `tools/features/layer_2/feature_builder_supply.py`
+  → `model/layer_2/model_builder_supply.py`. It runs as part of a full
+  `run_pipeline.py` / `run_no_scrape.py` (and on its own via `… run_all.py
+  layer_2`), and its figures appear in the HTML report (the *Layer 2* section).
+- **Layer 3 (price)** is not built yet; it will reuse the same scaffolding.
+
+The conceptual framing and required deliverables live in the docs:
 
 - **[docs/concepts.md](docs/concepts.md)** — market concepts and terminology.
 - **[docs/data.md](docs/data.md)** — data sources, access, lags, gotchas.

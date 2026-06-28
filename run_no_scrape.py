@@ -6,7 +6,8 @@ already in S3 onward, in order:
 
 Use this when the scrapers have already published data/raw/ to S3 and you only
 want to rebuild the masters, features and models on top of it (the slow part is
-scraping; this skips it).
+scraping; this skips it). Every built layer is refreshed — Layer 1 (consumption)
+and Layer 2 (supply) — so the report at the end reflects all layers.
 
 The stages hand off through the active storage backend — each reads the
 previous stage's output and writes its own. By default that backend is S3 (the
@@ -46,21 +47,25 @@ ROOT = Path(__file__).parent
 # The model stage builds this self-contained report; we open it when done.
 REPORT = ROOT / "model" / "results" / "index.html"
 
-# Ordered stages (everything except the scrapers), each its own run_all.py.
+# Ordered stages (everything except the scrapers): (name, run_all script, layers).
+# Each stage runs for every built layer. The MODEL stage runs layer_2 BEFORE
+# layer_1 on purpose: build_report.py (last step of the layer_1 model run)
+# aggregates every layer's figures from the backend, so layer_2 must be uploaded
+# first for the final report to include fresh supply figures.
 STAGES = [
-    ("transform", "tools/clean-and-transform/run_all.py"),
-    ("features",  "tools/features/run_all.py"),
-    ("model",     "model/run_all.py"),
+    ("transform", "tools/clean-and-transform/run_all.py",  ["layer_1", "layer_2"]),
+    ("features",  "tools/features/run_all.py",             ["layer_1", "layer_2"]),
+    ("model",     "model/run_all.py",                      ["layer_2", "layer_1"]),
 ]
 
 
-def run_stage(name: str, script: str, args: list[str]) -> tuple[str, int, float]:
-    """Run one stage's run_all.py as a subprocess; return (name, rc, seconds)."""
-    banner = f"  STAGE: {name}  ({script} {' '.join(args)})  "
+def run_stage(label: str, script: str, args: list[str]) -> tuple[str, int, float]:
+    """Run one stage's run_all.py as a subprocess; return (label, rc, seconds)."""
+    banner = f"  STAGE: {label}  ({script} {' '.join(args)})  "
     print(f"\n\n{'#' * 78}\n#{banner:^76}#\n{'#' * 78}")
     t0 = time.time()
     proc = subprocess.run([sys.executable, str(ROOT / script), *args])
-    return name, proc.returncode, time.time() - t0
+    return label, proc.returncode, time.time() - t0
 
 
 def open_report() -> None:
@@ -90,24 +95,31 @@ def main() -> int:
     sys.path.insert(0, str(ROOT / "tools"))
     from upload_s3 import describe_backend  # noqa: PLC0415
 
-    print(f"\nPipeline (no scrape): {' → '.join(n for n, _ in STAGES)}"
-          f"  ·  backend: {describe_backend()}")
+    print(f"\nPipeline (no scrape): {' → '.join(n for n, _, _ in STAGES)}"
+          f"  ·  layers: layer_1 + layer_2  ·  backend: {describe_backend()}")
 
     results = []
-    for name, script in STAGES:
+    interrupted = False
+    for name, script, layers in STAGES:
         if not (ROOT / script).exists():
             print(f"\n⚠ skipping {name} — {script} not found")
             results.append((name, -1, 0.0))
             continue
-        args = list(override)
-        # The model substage would open the report itself; suppress that and let
-        # this orchestrator open it once, at the very end (after the summary).
-        if name == "model":
-            args.append("--no-open")
-        try:
-            results.append(run_stage(name, script, args))
-        except KeyboardInterrupt:
-            print("\nInterrupted — stopping the pipeline.")
+        # Run the stage once per layer (or once with no layer for shared stages).
+        for layer in (layers or [None]):
+            label = f"{name}/{layer}" if layer else name
+            args = ([layer] if layer else []) + list(override)
+            # The model substage would open the report itself; suppress that and
+            # let this orchestrator open it once, at the very end (after summary).
+            if name == "model":
+                args.append("--no-open")
+            try:
+                results.append(run_stage(label, script, args))
+            except KeyboardInterrupt:
+                print("\nInterrupted — stopping the pipeline.")
+                interrupted = True
+                break
+        if interrupted:
             break
 
     print(f"\n\n{'=' * 78}\nSUMMARY (no scrape)\n{'=' * 78}")
@@ -116,12 +128,12 @@ def main() -> int:
         status = "✓ ok" if rc == 0 else ("⚠ missing" if rc == -1 else f"✗ rc={rc}")
         if rc != 0:
             failures += 1
-        print(f"  {status:<12} {name:<12} {secs:7.1f}s")
+        print(f"  {status:<12} {name:<20} {secs:7.1f}s")
     mins = sum(s for _, _, s in results) / 60
-    print(f"\n{len(results) - failures}/{len(results)} stages clean · total {mins:.1f} min")
+    print(f"\n{len(results) - failures}/{len(results)} steps clean · total {mins:.1f} min")
 
     # Auto-open the report unless told not to (the model stage must have run).
-    if not no_open and any(name == "model" for name, _, _ in results):
+    if not no_open and any(name.startswith("model") for name, _, _ in results):
         open_report()
     return failures
 
