@@ -495,6 +495,10 @@ def main() -> int:
     parts.append('<nav>' + " ".join(nav_links) + '</nav>')
     parts.append("<main>")
 
+    # Екип — горе вляво, под навигацията.
+    parts.append('<p class="team"><b>Екип:</b> Илиян Сарандалиев · Борис Станков · '
+                 'Константин Георгиев · Камелия Косекова · Джеймс Осонду</p>')
+
     # Първа секция: как работи електроенергийният пазар (+ ръчно качените фигури).
     parts.append(render_market_intro(collect_market_figs()))
     # Уводна секция за журито — как работи целият pipeline (с диаграми).
@@ -583,6 +587,8 @@ _HEAD = """<!doctype html>
   .badge {{ font-size: 12px; background: #2563eb; color: #fff; border-radius: 999px; padding: 2px 10px;
            vertical-align: middle; margin-left: 6px; }}
   .pick {{ color: #34d399; }}
+  .team {{ margin: 0 0 18px; font-size: 13px; color: #94a3b8; text-align: left; }}
+  .team b {{ color: #e2e8f0; }}
   table {{ border-collapse: collapse; width: 100%; font-size: 14px; margin: .4em 0;
           background: #14233f; border-radius: 8px; overflow: hidden; }}
   th {{ background: #16243f; text-align: left; padding: 9px 12px; color: #cfe0ff; }}
