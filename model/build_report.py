@@ -38,6 +38,10 @@ RESULTS_PREFIX = "data/results/"
 RESULTS_DIR = Path(__file__).parent / "results"
 OUT_NAME = "index.html"
 
+# Фигури за пазарната секция (качени ръчно в S3 под data/figures/), в реда за показване.
+MARKET_FIG_PREFIX = "data/figures/"
+MARKET_FIGS = ["Figure2.png", "Figure3.png", "Figure4.png", "Figure5.png", "Figure7.png"]
+
 # Дружелюбни заглавия на секциите по хоризонт и реда, в който се появяват.
 SECTIONS = [
     ("1d", "Day-ahead (24ч) — 4 модела vs ЕСО / naive"),
@@ -96,6 +100,25 @@ def collect() -> tuple[dict[str, dict[str, str]], str]:
     print(f"намерени {sum(len(v) for v in out.values())} локални PNG "
           f"({len(out)} хоризонта)")
     return out, "локални ./results/"
+
+
+def collect_market_figs() -> dict[str, str]:
+    """Фигурите за пазарната секция (data/figures/) → {name: base64 data_uri}."""
+    out: dict[str, str] = {}
+    try:
+        from upload_s3 import read_bytes  # noqa: PLC0415
+    except Exception as e:  # noqa: BLE001
+        print(f"  (пазарни фигури недостъпни — backend липсва: {e})")
+        return out
+    for name in MARKET_FIGS:
+        try:
+            data = read_bytes(MARKET_FIG_PREFIX + name)
+            out[name] = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+        except Exception as e:  # noqa: BLE001
+            print(f"  (пазарна фигура липсва: {name} — {e})")
+    if out:
+        print(f"намерени {len(out)} пазарни фигури (data/figures/)")
+    return out
 
 
 # ── малки HTML помощници ────────────────────────────────────────────────────
@@ -339,12 +362,18 @@ def render_layer2(figs: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
-def render_market_intro() -> str:
-    """Първа секция: как работи електроенергийният пазар (представя се на живо)."""
-    return """
-<section id="market"><h2>Как работи електроенергийният пазар — Илиян Сарандалиев</h2>
-<p class="lead">Въведение в динамиката и функционирането на Енергийния Пазар</p>
-</section>"""
+def render_market_intro(figs: dict[str, str] | None = None) -> str:
+    """Първа секция: как работи електроенергийният пазар (+ ръчно качените фигури)."""
+    figs = figs or {}
+    parts = [
+        '<section id="market"><h2>Как работи електроенергийният пазар — Илиян Сарандалиев</h2>',
+        '<p class="lead">Въведение в динамиката и функционирането на Енергийния Пазар</p>',
+    ]
+    for name in MARKET_FIGS:
+        if name in figs:
+            parts.append(figure(figs[name], name, name[:-4].replace("Figure", "Figure ")))
+    parts.append("</section>")
+    return "\n".join(parts)
 
 
 def render_pipeline_overview() -> str:
@@ -356,7 +385,7 @@ def render_pipeline_overview() -> str:
 Всеки етап чете входа си от backend-а (S3 или локалния) и записва изхода си там, така
 че следващият продължава от него.</p>
 
-<p style="margin:18px 0 4px"><b>Пълен прогон</b> — <code>python&nbsp;run_pipeline.py</code> (от нулата, вкл. сваляне на данните):</p>
+<p style="margin:18px 0 4px"><b>Пълен pipeline</b> — <code>python&nbsp;run_pipeline.py</code> (от нулата, вкл. сваляне на данните):</p>
 <div class="pipe">
   <div class="pipe-stage src">
     <h4>Източници</h4>
@@ -466,8 +495,8 @@ def main() -> int:
     parts.append('<nav>' + " ".join(nav_links) + '</nav>')
     parts.append("<main>")
 
-    # Първа секция: как работи електроенергийният пазар (представя се на живо).
-    parts.append(render_market_intro())
+    # Първа секция: как работи електроенергийният пазар (+ ръчно качените фигури).
+    parts.append(render_market_intro(collect_market_figs()))
     # Уводна секция за журито — как работи целият pipeline (с диаграми).
     parts.append(render_pipeline_overview())
 
@@ -610,6 +639,14 @@ _HEAD = """<!doctype html>
   .timeline .card {{ flex: 1 1 260px; }}
   .card.gate {{ border-color: #1d5e3b; background: #10231a; }}
   .card.deliver {{ border-color: #2b4a7a; background: #11203a; }}
+  /* --- PDF / print: keep the dark theme, avoid cutting blocks across pages --- */
+  @media print {{
+    nav {{ display: none; }}
+    main {{ padding: 0 12px; max-width: none; }}
+    figure, .card, .step, .stat, .pipe-stage, table, .takeaway, .note, .pipe, ol.keys {{
+      break-inside: avoid; }}
+    section h2 {{ break-after: avoid; }}
+  }}
 </style>
 </head>
 <body>
