@@ -141,7 +141,7 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
         return figure(figs.get(name), name, caption)
 
     parts: list[str] = []
-    parts.append('<section id="layer1"><h2>Layer 1 — Прогноза на потреблението (товара) · 24ч</h2>')
+    parts.append('<section id="layer1"><h2>Layer 1 — Прогноза на потреблението (товара) · 24ч — Константин Георгиев</h2>')
 
     parts.append(step("0 · Цел и принципи", ul([
         "<b>Цел:</b> прогноза на товара (MW) за <b>ден напред (24ч)</b>, плюс 1 седмица и 15 мин.",
@@ -285,7 +285,7 @@ SUPPLY_FIGS = [
 
 def render_layer2(figs: dict[str, str]) -> str:
     """HTML за Layer 2 (предлагане) — разказ + фигури."""
-    parts: list[str] = ['<section id="layer2"><h2>Layer 2 — Прогноза на предлагането (supply) · 24ч</h2>']
+    parts: list[str] = ['<section id="layer2"><h2>Layer 2 — Прогноза на предлагането (supply) · 24ч — Камелия Косекова</h2>']
     parts.append(
         '<p class="lead"><b>Предлагане = обща генерация (всички производствени типове) '
         '+ нетен внос</b> (<code>net_position</code>). Целта е прогноза на предлагането от '
@@ -324,15 +324,15 @@ def render_layer2(figs: dict[str, str]) -> str:
 def render_market_intro() -> str:
     """Първа секция: как работи електроенергийният пазар (представя се на живо)."""
     return """
-<section id="market"><h2>Как работи електроенергийният пазар</h2>
-<p class="lead">Тази секция ще бъде представена на живо от член на екипа.</p>
+<section id="market"><h2>Как работи електроенергийният пазар — Илиян Сарандалиев</h2>
+<p class="lead">Тази секция ще бъде представена на живо.</p>
 </section>"""
 
 
 def render_pipeline_overview() -> str:
     """Уводна секция за журито: как е устроен целият pipeline (с диаграми)."""
     return """
-<section id="pipeline"><h2>Как работи pipeline-ът</h2>
+<section id="pipeline"><h2>Как работи pipeline-ът — Борис Станков</h2>
 <p class="lead">Цялото решение е един възпроизводим <b>pipeline</b> от четири етапа:
 <code>scrape&nbsp;→&nbsp;clean&nbsp;&amp;&nbsp;transform&nbsp;→&nbsp;features&nbsp;→&nbsp;model</code>.
 Водещият принцип е <b>„S3 е единственият източник на истина“</b> — всеки етап чете

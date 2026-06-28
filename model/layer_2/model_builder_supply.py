@@ -12,7 +12,7 @@ Output (data/results/supply/, PNG):
   supply_predictions.png   test actual vs each model (standardised units)
   supply_metrics.png       MSE / RMSE / MAE / MAPE table per model
 
-Models (kept from the original all-in-one supply_side.py): Lasso(α=0.01),
+Models (kept from the original supply-side analysis): Lasso(α=0.01),
 Ridge(α=1), ElasticNet(α=0.01), DecisionTree, RandomForest, GradientBoosting,
 plus naive (last training value). Features (weather + calendar + outage dummies)
 and the target are standardised per split, as in the original.

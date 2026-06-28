@@ -12,7 +12,7 @@ Per-layer execution — pass the layer as the first positional argument:
 
     python model/run_all.py             # Layer 1 (default): consumption/load
     python model/run_all.py layer_1     # same, explicit
-    python model/run_all.py layer_2     # Layer 2: supply side (all-in-one script)
+    python model/run_all.py layer_2     # Layer 2: supply side (trains the supply models)
 
 Layer 1 trains the three horizon builders (24h / 168h / 1h-ahead) and then
 build_report.py bakes their PNGs into one self-contained model/results/index.html,
@@ -65,8 +65,6 @@ LAYERS = {
     ],
     # Layer 2 — supply side: trains the supply models on the Layer 2 feature
     # table and writes figures to data/results/supply/ (folded into the report).
-    # (The original all-in-one supply_side.py is kept on disk for reference but
-    # no longer run from here.)
     "layer_2": [
         "layer_2/model_builder_supply.py",
     ],

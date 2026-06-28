@@ -77,8 +77,7 @@ case-predict-electricity-prices/
 │   │   ├── model_builder_1w.py         ← 168h: 4 models vs naive
 │   │   └── model_builder_15min.py      ← 1h-ahead nowcast (+15-min ramp) vs persistence
 │   └── layer_2/                        ← Layer 2 (supply): models + figures
-│       ├── model_builder_supply.py     ← 6 models + naive on the supply features → data/results/supply/
-│       └── supply_side.py              ← original all-in-one script (kept for reference, not run)
+│       └── model_builder_supply.py     ← 6 models + naive on the supply features → data/results/supply/
 │
 └── data/                           ← provided seed data (snapshots, go stale)
 ```
@@ -344,9 +343,9 @@ python tools/features/run_all.py layer_2              # supply features
 python model/run_all.py layer_2                       # supply models + figures
 ```
 
-The original `model/layer_2/supply_side.py` is kept on disk for reference but is
-no longer run. (Its data reads used hardcoded local paths; the split scripts read
-everything from S3 instead.)
+(Layer 2 began as a single all-in-one script with hardcoded local paths; it was
+split into these stages, which read everything from S3 like the rest of the
+project.)
 
 ### Working on the report
 
