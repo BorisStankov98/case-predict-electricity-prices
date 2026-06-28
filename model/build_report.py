@@ -45,9 +45,16 @@ SECTIONS = [
     ("15min", "1ч-напред nowcast (→ 15-мин ramp) — 4 модела vs persistence"),
 ]
 # Подреждане на фигурите в секция (по префикс); останалите следват по азбучен ред.
-FIG_ORDER = ["pipeline_metrics", "pipeline_significant", "pipeline_selection",
-             "pipeline_diagnostics", "pipeline_intervals", "pipeline_learning_curve",
-             "pipeline_final", "pipeline_15min_ramp", "pipeline_corr"]
+# pipeline_corr е веднага след pipeline_significant (корелациите по модел).
+FIG_ORDER = ["pipeline_metrics", "pipeline_significant", "pipeline_corr",
+             "pipeline_selection", "pipeline_diagnostics", "pipeline_intervals",
+             "pipeline_learning_curve", "pipeline_final", "pipeline_15min_ramp"]
+
+# Фигури, премахнати от отчета по хоризонт (по префикс на името).
+PLAIN_EXCLUDE = {
+    "1week": ("pipeline_learning_curve",),               # без learning curve (Ridge)
+    "15min": ("pipeline_learning_curve", "pipeline_15min_ramp"),  # без learning curve и 15-мин рампа
+}
 
 
 # ── събиране на фигурите: S3, иначе локално ─────────────────────────────────
@@ -135,18 +142,11 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
 
     parts: list[str] = []
     parts.append('<section id="layer1"><h2>Layer 1 — Прогноза на потреблението (товара) · 24ч</h2>')
-    parts.append(
-        '<p class="lead">Пазар: <b>България</b>. Цел: честна прогноза на товара (MW) за '
-        '<b>ден напред</b>, която <b>бие официалната прогноза на ЕСО</b>. '
-        'Бенчмарки: ЕСО (day-ahead) и naive (предния ден). '
-        'Водещ принцип — <b>без look-ahead</b>: всеки feature ползва само информация, '
-        'налична на момента на прогнозата.</p>')
 
     parts.append(step("0 · Цел и принципи", ul([
         "<b>Цел:</b> прогноза на товара (MW) за <b>ден напред (24ч)</b>, плюс 1 седмица и 15 мин.",
         "<b>Бенчмарки:</b> официалната day-ahead прогноза на <b>ЕСО</b> и <b>naive</b> (предния ден).",
-        "<b>Без look-ahead:</b> всеки feature ползва само налична към момента информация — "
-        "честността е лайтмотивът на цялата работа.",
+        "<b>Без look-ahead:</b> всеки feature ползва само налична към момента информация.",
     ])))
 
     parts.append(step("1 · Данни (източници)", table(["данни", "роля"], [
@@ -157,24 +157,7 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
     ]) + note("Канонизирани в обща часова решетка, <b>локално българско време</b> "
               "(Europe/Sofia, tz-aware), от единен възпроизводим builder.")))
 
-    parts.append(step("2 · Стационарност (ADF)",
-        ul([
-            "<b>Изследване:</b> ADF тест на товара — ако нивото не е стационарно, би трябвало да "
-            "диференцираме (Δ24 = load − lag24).",
-            "<b>Резултат:</b> товарът <b>Е стационарен по ADF</b> (p≈0.008). Видимата "
-            "„нестационарност“ е <b>сезонност</b> (дневен/седмичен ритъм), <b>не unit-root</b>.",
-        ]) + takeaway("НЕ диференцираме. Сезонността се поема от детерминистични сезонни "
-                      "feature-и (календар + лагове). (Δ24 тестван: без печалба.)")))
-
-    parts.append(step("3 · Честна методология (no look-ahead) — гръбнакът", ul([
-        "<b>Метео:</b> реалното време за T е look-ahead → ползваме <b>day-ahead ПРОГНОЗА за T</b> "
-        "(или <code>lag24</code> proxy, ако липсва).",
-        "<b>Товарни лагове:</b> само <b>≥24ч</b> (никога стойност от деня на доставка).",
-        "<b>Календар:</b> детерминистичен → винаги наличен.",
-        "<b>Оценка:</b> rolling <b>walk-forward</b> — тестов блок след train, никога върху обучаван период.",
-    ])))
-
-    parts.append(step("4 · Feature engineering <span class=\"badge\">45 → 36 след подбор</span>",
+    parts.append(step("4 · Feature engineering",
         '<div class="cards">'
         '<div class="card"><h4>LOAD</h4>' + ul([
             "лагове <code>lag24/48/168/336/720/8760</code>",
@@ -192,14 +175,6 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
             "<code>is_day_off</code>, празнични (pre/post/мост/Великден)",
         ]) + '</div></div>' +
         note("Всички блокове са <b>честни</b> — нито един feature не „надниква“ в бъдещето.")))
-
-    parts.append(step("5 · ГОЛЯМАТА НАХОДКА: реална метео-прогноза vs lag24 proxy",
-        '<div class="bigstat">'
-        '<div class="stat"><div class="num">−24%</div><div class="lbl">XGBoost MAE<br>151.5 → 115.8</div></div>'
-        '<div class="stat"><div class="num">−16%</div><div class="lbl">Ridge MAE<br>148.9 → 125.1</div></div>'
-        '</div>' +
-        takeaway("реалната прогноза носи <b>нелинеен метео-сигнал</b> → <b>XGBoost става водещ</b> при "
-                 "24ч (при proxy метеото беше шум и линейните печелеха). Това вдига цялото L1.")))
 
     parts.append(step("6 · Модели", ul([
         "<b>Ridge, Lasso, ElasticNet</b> (линейни, L2 / L1 / L1+L2 регуляризация) и <b>XGBoost</b> (дървета).",
@@ -226,20 +201,17 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
             "(систематично изместена).",
             "Грешки: ACF lag1≈0.84, но lag24/168≈0 (присъщо на 24ч), <b>хетероскедастични</b>, "
             "<b>не-нормални</b>, но <b>стационарни</b> (ADF+KPSS).",
-        ]) +
-        takeaway("превъзходството над ЕСО <b>не е случайно</b> — статистически значимо е.")))
+        ])))
 
-    parts.append(step("11 · Подбор на features — какво НЕ работи",
+    # Корелации по модел (Lasso · Ridge · XGBoost) — веднага след 9–10.
+    parts.append(step("Корелации по модел (Lasso · Ridge · XGBoost)",
+        f("pipeline_corr_Lasso.png", "Корелации feature→товар и feature×feature (Lasso)") +
+        f("pipeline_corr_Ridge.png", "Корелации feature→товар и feature×feature (Ridge)") +
+        f("pipeline_corr_XGBoost.png", "Корелации feature→товар и feature×feature (XGBoost)")))
+
+    parts.append(step("11 · Подбор на features",
         f("pipeline_significant.png", "Значими / важни features за всеки модел") +
-        ul([
-            "Махане по <b>ниска корелация</b> — ❌ грешно (пропуска нелинейности).",
-            "Махане по <b>висока мултиколинеарност</b> — ⚠️ ВРЕДИ силно (Ridge +19 MAE!): "
-            "„колинеарно ≠ редундантно“.",
-            "Комбиниран критерий (незначим И |corr|&lt;0.2): махна 9 feature-а (45→36) <b>без загуба</b>.",
-        ]) +
-        f("pipeline_corr_ElasticNet.png", "Корелации feature→товар и feature×feature (ElasticNet)") +
-        takeaway("остави моделите да избират (Lasso/ElasticNet нулират ненужните); махай ръчно само "
-                 "точни дубликати; валидирай с OOS, не с univariate статистики.")))
+        f("pipeline_corr_ElasticNet.png", "Корелации feature→товар и feature×feature (ElasticNet)")))
 
     parts.append(step("12 · Доверителни интервали — Mondrian conformal (90%)",
         f("pipeline_intervals.png", "90% Mondrian покритие / ширина / Winkler") +
@@ -255,10 +227,6 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
         takeaway("за day-ahead товар <b>регуляризиран линеен модел</b> е най-балансираният избор; "
                  "XGBoost е последен — въпреки най-доброто MAPE, най-висок overfit + най-лоши интервали го свалят.")))
 
-    parts.append(step("15 · Learning curve (избрания модел)",
-        f("pipeline_learning_curve_ElasticNet.png", "train vs test MAE спрямо обема обучение") +
-        takeaway("нужни са поне ~3–4 месеца данни; плато около 1 година — повече почти не помага.")))
-
     parts.append(step("Финален модел — ElasticNet (24ч)",
         f("pipeline_final_ElasticNet.png",
           "scatter(adjR²) · хистограма грешки · actual/predicted · 90% Mondrian") +
@@ -273,31 +241,34 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
         ]) +
         takeaway("колкото по-слаб сигналът (1 седм), толкова повече линейните бият дървото.")))
 
-    parts.append(step("Ключови изводи",
-        '<ol class="keys">'
-        '<li><b>Честната методология работи:</b> без look-ahead, и пак бием ЕСО с ~30% (значимо).</li>'
-        '<li><b>Реалната метео-прогноза е решаващата стъпка</b> (−24% спрямо proxy); прави XGBoost конкурентен.</li>'
-        '<li><b>Линеен модел (ElasticNet) е най-балансираният</b> избор; XGBoost овърфитва.</li>'
-        '<li><b>Подборът на features: остави моделите да избират;</b> ръчното рязане по корелация вреди.</li>'
-        '<li><b>Грешките не са бял шум</b> (присъщо на 24ч), хетероскедастични и не-нормални → <b>Mondrian conformal</b>.</li>'
-        '<li><b>Товарът е сезонно-, не unit-root-нестационарен</b> → не се диференцира.</li>'
-        '<li><b>Три хоризонта покрити:</b> 24ч (силен), 1 седм (+19% над naive), 15 мин (дезагрегация).</li>'
-        '</ol>'))
-
     # Останалите 1d фигури, които не са показани в разказа — приложение.
-    extras = [n for n in sorted(figs, key=fig_sort_key) if n not in used]
+    # (learning curve е премахната напълно — изключваме я и от приложението.)
+    extras = [n for n in sorted(figs, key=fig_sort_key)
+              if n not in used and not n.startswith("pipeline_learning_curve")]
     if extras:
         body = "".join(figure(figs[n], n) for n in extras)
         parts.append(step("Приложение · Допълнителни 1d фигури", body))
+
+    # Ключови изводи — обобщение на Layer 1, най-отдолу.
+    parts.append(step("Ключови изводи",
+        '<ol class="keys">'
+        '<li><b>Реалната метео-прогноза е решаващата стъпка</b>.</li>'
+        '<li><b>Линеен модел (ElasticNet) е най-балансираният</b> избор; XGBoost овърфитва.</li>'
+        '<li><b>Грешките не са бял шум</b> (присъщо на 24ч), хетероскедастични и не-нормални → <b>Mondrian conformal</b>.</li>'
+        '<li><b>Три хоризонта покрити:</b> 24ч (силен), 1 седм (+19% над naive), 15 мин (дезагрегация).</li>'
+        '</ol>'))
 
     parts.append("</section>")
     return "\n".join(parts), used
 
 
 # ── обикновена секция (15min, 1week): подредени фигури, вертикално ───────────
-def render_plain(title: str, figs: dict[str, str]) -> str:
+def render_plain(title: str, figs: dict[str, str], hz: str = "") -> str:
+    skip = PLAIN_EXCLUDE.get(hz, ())
     parts = [f'<section><h2>{html.escape(title)}</h2>']
     for name in sorted(figs, key=fig_sort_key):
+        if any(name.startswith(p) for p in skip):
+            continue
         parts.append(figure(figs[name], name))
     parts.append("</section>")
     return "\n".join(parts)
@@ -484,27 +455,6 @@ def render_pipeline_overview() -> str:
 </ol>
 <div class="note"><code>.env</code> се зарежда автоматично и е <b>по желание</b> — реалните
 env-променливи имат предимство пред него. Без никаква конфигурация pipeline-ът работи на S3.</div>
-
-<h3 style="margin-top:24px">Честна методология — без look-ahead</h3>
-<p>Сърцето на Layer 1: всеки feature ползва само информация, налична
-<b>на момента на прогнозата</b> (ден предварително). Затова разделяме ясно
-какво <b>знаем на гейта</b> от това, което <b>прогнозираме</b>.</p>
-<div class="timeline">
-  <div class="card gate"><h4>🔒 Ден D−1 · гейт — какво знаем</h4>
-    <ul>
-      <li>товарни лагове само <b>≥24ч</b> (<code>lag24/48/168…</code>)</li>
-      <li>реална <b>day-ahead метео-ПРОГНОЗА</b> за всеки час на ден D</li>
-      <li>детерминистичен календар (празници/уикенди)</li>
-    </ul></div>
-  <div class="pipe-arrow">→</div>
-  <div class="card deliver"><h4>🎯 Ден D · прогнозираме 24ч</h4>
-    <ul>
-      <li>прогноза на товара (MW) за всеки час</li>
-      <li>оценка: rolling <b>walk-forward</b> (тестов блок след train)</li>
-      <li>сравнение с ЕСО и naive + 90% conformal интервали</li>
-    </ul></div>
-</div>
-<div class="note">Подробните данни, методи и резултати по хоризонти следват по-долу.</div>
 </section>"""
 
 
@@ -550,7 +500,7 @@ def main() -> int:
         elif hz == "supply":
             parts.append(render_layer2(figs))
         else:
-            parts.append(render_plain(titles.get(hz, hz), figs))
+            parts.append(render_plain(titles.get(hz, hz), figs, hz))
 
     if not any_figs:
         parts.append('<section><p class="empty">Няма резултатни PNG още — '
