@@ -56,6 +56,14 @@ PLAIN_EXCLUDE = {
     "15min": ("pipeline_learning_curve", "pipeline_15min_ramp"),  # без learning curve и 15-мин рампа
 }
 
+# Подреждане на фигурите по хоризонт (override на FIG_ORDER). Иначе → FIG_ORDER.
+PLAIN_ORDER = {
+    # 15min: pipeline_intervals точно под pipeline_selection.
+    "15min": ["pipeline_metrics", "pipeline_significant", "pipeline_corr",
+              "pipeline_diagnostics", "pipeline_selection", "pipeline_intervals",
+              "pipeline_learning_curve", "pipeline_final", "pipeline_15min_ramp"],
+}
+
 
 # ── събиране на фигурите: S3, иначе локално ─────────────────────────────────
 def collect() -> tuple[dict[str, dict[str, str]], str]:
@@ -143,13 +151,13 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
     parts: list[str] = []
     parts.append('<section id="layer1"><h2>Layer 1 — Прогноза на потреблението (товара) · 24ч — Константин Георгиев</h2>')
 
-    parts.append(step("0 · Цел и принципи", ul([
+    parts.append(step("Цел и принципи", ul([
         "<b>Цел:</b> прогноза на товара (MW) за <b>ден напред (24ч)</b>, плюс 1 седмица и 15 мин.",
         "<b>Бенчмарки:</b> официалната day-ahead прогноза на <b>ЕСО</b> и <b>naive</b> (предния ден).",
         "<b>Без look-ahead:</b> всеки feature ползва само налична към момента информация.",
     ])))
 
-    parts.append(step("1 · Данни (източници)", table(["данни", "роля"], [
+    parts.append(step("Данни (източници)", table(["данни", "роля"], [
         ["<code>load_actual</code> (ENTSO-E)", "<b>таргет</b> — реалният товар"],
         ["<code>load_forecast_day_ahead</code> (ЕСО)", "<b>бенчмарк</b> (НЕ е feature)"],
         ["<code>bulgaria_1day_ahead_forecast</code> (open-meteo)", "<b>реална day-ahead метео-ПРОГНОЗА</b> за час T"],
@@ -157,7 +165,7 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
     ]) + note("Канонизирани в обща часова решетка, <b>локално българско време</b> "
               "(Europe/Sofia, tz-aware), от единен възпроизводим builder.")))
 
-    parts.append(step("4 · Feature engineering",
+    parts.append(step("Feature engineering",
         '<div class="cards">'
         '<div class="card"><h4>LOAD</h4>' + ul([
             "лагове <code>lag24/48/168/336/720/8760</code>",
@@ -176,23 +184,23 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
         ]) + '</div></div>' +
         note("Всички блокове са <b>честни</b> — нито един feature не „надниква“ в бъдещето.")))
 
-    parts.append(step("6 · Модели", ul([
+    parts.append(step("Модели", ul([
         "<b>Ridge, Lasso, ElasticNet</b> (линейни, L2 / L1 / L1+L2 регуляризация) и <b>XGBoost</b> (дървета).",
         "ЕСО прогнозата <b>НЕ влиза като feature</b> никъде.",
         "Линейните се стандартизират; регуляризацията се избира с вътрешен CV (без да се пипа тестът).",
     ])))
 
-    parts.append(step("7 · Walk-forward оценка (сетъп)", ul([
+    parts.append(step("Walk-forward оценка (сетъп)", ul([
         "<b>Плъзгащ ~589-дневен прозорец</b> (≈1.5–2 г.), <b>15-дневни тестови блокове</b>.",
         "<b>Тестов период:</b> октомври 2025 → юни 2026 (~9 месеца, включва пълна зима).",
     ])))
 
-    parts.append(step("8 · Метрики и резултати — 24ч (36 features)",
+    parts.append(step("Метрики и резултати — 24ч (36 features)",
         f("pipeline_metrics.png", "L1 24ч — метрики на 4 модела vs ЕСО/naive") +
         takeaway("всички модели <b>бият ЕСО с ~29%</b> и naive с ~33%. XGBoost има най-добро MAPE, "
                  "но <b>най-голям overfit</b> (1.51 vs ~1.23 на линейните).")))
 
-    parts.append(step("9–10 · Статистическа валидация и диагностика на грешките",
+    parts.append(step("Статистическа валидация и диагностика на грешките",
         f("pipeline_diagnostics.png", "Значимост (DM) + диагностика на грешките") +
         ul([
             "<b>Diebold-Mariano</b> (HAC) + moving-block bootstrap: всички модели <b>значимо бият ЕСО И "
@@ -203,17 +211,17 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
             "<b>не-нормални</b>, но <b>стационарни</b> (ADF+KPSS).",
         ])))
 
-    # Корелации по модел (Lasso · Ridge · XGBoost) — веднага след 9–10.
-    parts.append(step("Корелации по модел (Lasso · Ridge · XGBoost)",
+    # Корелации по модел (Lasso · Ridge · XGBoost · ElasticNet) — веднага след 9–10.
+    parts.append(step("Корелации по модел (Lasso · Ridge · XGBoost · ElasticNet)",
         f("pipeline_corr_Lasso.png", "Корелации feature→товар и feature×feature (Lasso)") +
         f("pipeline_corr_Ridge.png", "Корелации feature→товар и feature×feature (Ridge)") +
-        f("pipeline_corr_XGBoost.png", "Корелации feature→товар и feature×feature (XGBoost)")))
-
-    parts.append(step("11 · Подбор на features",
-        f("pipeline_significant.png", "Значими / важни features за всеки модел") +
+        f("pipeline_corr_XGBoost.png", "Корелации feature→товар и feature×feature (XGBoost)") +
         f("pipeline_corr_ElasticNet.png", "Корелации feature→товар и feature×feature (ElasticNet)")))
 
-    parts.append(step("12 · Доверителни интервали — Mondrian conformal (90%)",
+    parts.append(step("Подбор на features",
+        f("pipeline_significant.png", "Значими / важни features за всеки модел")))
+
+    parts.append(step("Доверителни интервали — Mondrian conformal (90%)",
         f("pipeline_intervals.png", "90% Mondrian покритие / ширина / Winkler") +
         ul([
             "Split-conformal, <b>отделен квантил на грешката по час</b> (Mondrian), distribution-free.",
@@ -222,7 +230,7 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
         ]) +
         takeaway("интервалите са калибрирани и адаптивни — лекуват хетероскедастичността.")))
 
-    parts.append(step('13 · Избор на модел → <span class="pick">ElasticNet</span>',
+    parts.append(step('Избор на модел → <span class="pick">ElasticNet</span>',
         f("pipeline_selection.png", "Композитен резултат (MAPE↓ + overfit↓ + Winkler↓) → избран модел") +
         takeaway("за day-ahead товар <b>регуляризиран линеен модел</b> е най-балансираният избор; "
                  "XGBoost е последен — въпреки най-доброто MAPE, най-висок overfit + най-лоши интервали го свалят.")))
@@ -232,7 +240,7 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
           "scatter(adjR²) · хистограма грешки · actual/predicted · 90% Mondrian") +
         note("Четирите панела на избрания модел върху тестовия период.")))
 
-    parts.append(step("14 · Другите хоризонти",
+    parts.append(step("Другите хоризонти",
         table(["хоризонт", "ключово", "резултат"], [
             ["<b>1 седмица (168ч)</b>", "метео НЕ е налична 7 дни напред → <code>lag168</code> proxy (слаб)",
              "Ridge/ElasticNet ~282 MAE, <b>−19% vs naive</b>; XGBoost овърфитва; MAPE ~6%"],
@@ -249,24 +257,34 @@ def render_1d(figs: dict[str, str]) -> tuple[str, set[str]]:
         body = "".join(figure(figs[n], n) for n in extras)
         parts.append(step("Приложение · Допълнителни 1d фигури", body))
 
-    # Ключови изводи — обобщение на Layer 1, най-отдолу.
-    parts.append(step("Ключови изводи",
+    parts.append("</section>")
+    return "\n".join(parts), used
+
+
+def render_layer1_keys() -> str:
+    """Ключови изводи — обобщение на Layer 1, най-отдолу (след всички хоризонти)."""
+    return ('<section id="layer1-keys"><h2>Layer 1 — Ключови изводи</h2>'
         '<ol class="keys">'
         '<li><b>Реалната метео-прогноза е решаващата стъпка</b>.</li>'
         '<li><b>Линеен модел (ElasticNet) е най-балансираният</b> избор; XGBoost овърфитва.</li>'
         '<li><b>Грешките не са бял шум</b> (присъщо на 24ч), хетероскедастични и не-нормални → <b>Mondrian conformal</b>.</li>'
         '<li><b>Три хоризонта покрити:</b> 24ч (силен), 1 седм (+19% над naive), 15 мин (дезагрегация).</li>'
-        '</ol>'))
-
-    parts.append("</section>")
-    return "\n".join(parts), used
+        '</ol></section>')
 
 
 # ── обикновена секция (15min, 1week): подредени фигури, вертикално ───────────
 def render_plain(title: str, figs: dict[str, str], hz: str = "") -> str:
     skip = PLAIN_EXCLUDE.get(hz, ())
+    order = PLAIN_ORDER.get(hz, FIG_ORDER)
+
+    def key(name: str):
+        for i, pref in enumerate(order):
+            if name.startswith(pref):
+                return (i, name)
+        return (len(order), name)
+
     parts = [f'<section><h2>{html.escape(title)}</h2>']
-    for name in sorted(figs, key=fig_sort_key):
+    for name in sorted(figs, key=key):
         if any(name.startswith(p) for p in skip):
             continue
         parts.append(figure(figs[name], name))
@@ -325,7 +343,7 @@ def render_market_intro() -> str:
     """Първа секция: как работи електроенергийният пазар (представя се на живо)."""
     return """
 <section id="market"><h2>Как работи електроенергийният пазар — Илиян Сарандалиев</h2>
-<p class="lead">Тази секция ще бъде представена на живо.</p>
+<p class="lead">Въведение в динамиката и функционирането на Енергийния Пазар</p>
 </section>"""
 
 
@@ -333,23 +351,12 @@ def render_pipeline_overview() -> str:
     """Уводна секция за журито: как е устроен целият pipeline (с диаграми)."""
     return """
 <section id="pipeline"><h2>Как работи pipeline-ът — Борис Станков</h2>
-<p class="lead">Цялото решение е един възпроизводим <b>pipeline</b> от четири етапа:
-<code>scrape&nbsp;→&nbsp;clean&nbsp;&amp;&nbsp;transform&nbsp;→&nbsp;features&nbsp;→&nbsp;model</code>.
-Водещият принцип е <b>„S3 е единственият източник на истина“</b> — всеки етап чете
-входа си от S3 и записва изхода обратно в S3. Затова никой локален файл не е
-авторитетен и всеки с достъп до bucket-а може да възпроизведе целия резултат от нулата.</p>
+<p class="lead">Решението е един <b>pipeline</b> от четири етапа — от сурови данни до готови
+модели и този отчет: <code>scrape&nbsp;→&nbsp;data&nbsp;engineering&nbsp;→&nbsp;features&nbsp;engineering&nbsp;→&nbsp;modeling</code>.
+Всеки етап чете входа си от backend-а (S3 или локалния) и записва изхода си там, така
+че следващият продължава от него.</p>
 
-<div class="note">Решението е организирано на <b>слоеве (layers)</b>:
-<b>Layer&nbsp;1 — потребление (товар)</b>, <b>Layer&nbsp;2 — предлагане (supply)</b> и
-<b>Layer&nbsp;3 — цена</b>. <b>Този отчет е крайният резултат и покрива всички готови
-слоеве</b> — <b>Layer&nbsp;1</b> и <b>Layer&nbsp;2</b> (резултатите им следват по-долу).
-И двата минават през едни и същи етапи, разделени по слой
-(<code>transform</code> / <code>features/layer_*</code> / <code>model/layer_*</code>).
-Пълният прогон (<code>run_pipeline.py</code> / <code>run_no_scrape.py</code>) върти
-<b>всички слоеве</b> и обновява целия отчет; всеки слой може и поотделно, напр.
-<code>python&nbsp;model/run_all.py&nbsp;layer_2</code>. Слоят за
-<b>цената (Layer&nbsp;3)</b> предстои.</div>
-
+<p style="margin:18px 0 4px"><b>Пълен прогон</b> — <code>python&nbsp;run_pipeline.py</code> (от нулата, вкл. сваляне на данните):</p>
 <div class="pipe">
   <div class="pipe-stage src">
     <h4>Източници</h4>
@@ -365,96 +372,76 @@ def render_pipeline_overview() -> str:
     <div class="d">сваля суровите данни от публичните източници</div>
     <code class="artifact">data/raw/</code></div>
   <div class="pipe-arrow">→</div>
-  <div class="pipe-stage"><span class="n">2</span><h4>Clean &amp; Transform</h4>
+  <div class="pipe-stage"><span class="n">2</span><h4>Data Engineering</h4>
     <div class="d">канонични часови master-таблици в локално BG време (Europe/Sofia)</div>
     <code class="artifact">data/processed/ · master_*.csv</code></div>
   <div class="pipe-arrow">→</div>
-  <div class="pipe-stage"><span class="n">3</span><h4>Features</h4>
+  <div class="pipe-stage"><span class="n">3</span><h4>Features Engineering</h4>
     <div class="d">честни предиктори: лагове, метео-прогноза, календар — без look-ahead</div>
     <code class="artifact">data/processed/ · features_*.csv</code></div>
   <div class="pipe-arrow">→</div>
-  <div class="pipe-stage"><span class="n">4</span><h4>Model</h4>
+  <div class="pipe-stage"><span class="n">4</span><h4>Modeling</h4>
     <div class="d">walk-forward обучение, 4 модела vs ЕСО/naive + conformal интервали</div>
     <code class="artifact">data/results/ · фигури + този отчет</code></div>
 </div>
 
-<div class="s3-band">
-  <div class="s3-ico">⛁</div>
-  <div class="s3-txt"><b>S3 bucket — единственият източник на истина.</b>
-    Всеки етап чете входа си от S3 и качва изхода обратно; етапите се свързват
-    през S3, не през локални файлове.</div>
-  <div class="s3-folders">
-    <code class="artifact">data/raw/</code>
-    <code class="artifact">data/processed/</code>
-    <code class="artifact">data/results/</code>
-  </div>
+<p style="margin:18px 0 4px"><b>Без сваляне</b> — <code>python&nbsp;run_no_scrape.py</code> (суровите данни вече са в S3):</p>
+<div class="pipe">
+  <div class="pipe-stage src"><h4>Сурови данни (готови)</h4>
+    <ul class="src-list"><li>вече свалени в S3</li></ul>
+    <code class="artifact">data/raw/</code></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-stage"><span class="n">1</span><h4>Data Engineering</h4>
+    <div class="d">канонични часови master-таблици в локално BG време (Europe/Sofia)</div>
+    <code class="artifact">data/processed/ · master_*.csv</code></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-stage"><span class="n">2</span><h4>Features Engineering</h4>
+    <div class="d">честни предиктори: лагове, метео-прогноза, календар — без look-ahead</div>
+    <code class="artifact">data/processed/ · features_*.csv</code></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-stage"><span class="n">3</span><h4>Modeling</h4>
+    <div class="d">walk-forward обучение, 4 модела vs ЕСО/naive + conformal интервали</div>
+    <code class="artifact">data/results/ · фигури + този отчет</code></div>
 </div>
 
 <div class="cards" style="margin-top:16px">
-  <div class="card"><h4>Възпроизводимо</h4>една команда (<code>run_pipeline.py</code>)
-    стартира (run) целия chain; всеки етап има и свой <code>run_all.py</code>, който
-    може да се изпълни поотделно.</div>
-  <div class="card"><h4>Модулно и устойчиво</h4>всеки скрипт е отделен процес —
-    при грешка тя се логва и се прескача, без да сваля целия pipeline.</div>
-  <div class="card"><h4>Два backend-а</h4>по подразбиране backend-ът е <b>S3</b>
-    (или каквото е зададено в <code>STORAGE_BACKEND</code> в <code>.env</code>);
-    <code>--local</code> ползва локално огледало (<code>./local_store/</code>) със същия
-    ключов layout.</div>
+  <div class="card"><h4>Локално или в S3</h4>Един и същ pipeline работи на два backend-а:
+    <b>S3</b> — споделеният bucket, по подразбиране — или <b>локално</b>
+    (<code>--local</code>, папка <code>./local_store/</code>). И в двата случая етапите
+    се верижат по един и същ начин.</div>
+  <div class="card"><h4>Цял или на части</h4>Една команда — <code>python&nbsp;run_pipeline.py</code> —
+    пуска целия chain. Но всеки етап (и всеки слой) може и самостоятелно, напр.
+    <code>python&nbsp;model/run_all.py</code> само за моделите.</div>
 </div>
 
-<h3 style="margin-top:24px">Как се стартира (run)</h3>
-<p><b>S3 е по подразбиране</b> — без флаг всеки етап чете входа си от S3 и записва
-изхода обратно, а следващият етап го чете оттам. Backend-ът може да се зададе и в
-<code>.env</code> (<code>STORAGE_BACKEND=s3|local</code>); флаговете <code>--local</code> /
-<code>--s3</code> го override-ват за конкретното изпълнение.</p>
+<h3 style="margin-top:24px">Помощни скриптове</h3>
+<p>Малки скриптове около отчета — за бързо итериране, без да се пуска целият pipeline:</p>
 <table>
-  <thead><tr><th>Команда</th><th>Какво прави</th><th>Кога</th></tr></thead>
+  <thead><tr><th>Команда</th><th>Какво прави</th></tr></thead>
   <tbody>
-    <tr>
-      <td><code>python run_pipeline.py</code></td>
-      <td>и&nbsp;4-те етапа: scrape&nbsp;→&nbsp;transform&nbsp;→&nbsp;features&nbsp;→&nbsp;model</td>
-      <td>пълен run от нулата (вкл. сваляне на данните)</td>
-    </tr>
-    <tr>
-      <td><code>python run_no_scrape.py</code></td>
-      <td>3&nbsp;етапа: transform&nbsp;→&nbsp;features&nbsp;→&nbsp;model</td>
-      <td>суровите данни вече са в S3 — само преизграждаш master-и&nbsp;→&nbsp;features&nbsp;→&nbsp;модели&nbsp;+&nbsp;отчет</td>
-    </tr>
-    <tr>
-      <td><code>python model/run_all.py</code> <span class="badge">layer_1</span></td>
-      <td>само етап „model“ за Layer&nbsp;1 (3&nbsp;модела&nbsp;×&nbsp;хоризонт + този отчет)</td>
-      <td>преобучаване само на моделите за потреблението</td>
-    </tr>
-    <tr>
-      <td><code>python model/run_all.py layer_2</code></td>
-      <td>Layer&nbsp;2 (предлагане) — обучава supply моделите</td>
-      <td>извън <code>run_pipeline.py</code>; фигурите му влизат в този отчет (секция Layer&nbsp;2)</td>
-    </tr>
+    <tr><td><code>python regen_report.py</code></td>
+        <td>преизгражда отчета локално от фигурите в S3 и го отваря — <b>без качване</b></td></tr>
+    <tr><td><code>python upload_report.py</code></td>
+        <td>качва текущия локален отчет в S3 (<code>data/results/index.html</code>)</td></tr>
+    <tr><td><code>python open_report.py</code></td>
+        <td>отваря отчета; ако липсва локално, го сваля от S3</td></tr>
   </tbody>
 </table>
-<div class="cards" style="margin-top:14px">
-  <div class="card"><h4>--local / --s3</h4><code>--local</code> ползва локален backend
-    (<code>./local_store/</code>) за <b>четене и запис</b> — със същия ключов layout като
-    S3, затова локалният run <b>се верижи</b> (всеки етап чете каквото предходният току-що е
-    записал локално). <code>--s3</code> форсира S3 за конкретния run.</div>
-  <div class="card"><h4>.env</h4>стоящ default за backend-а и креденшъли
-    (<code>STORAGE_BACKEND</code>, <code>S3_BUCKET</code>, AWS ключове) — зарежда се
-    автоматично; реалните env-променливи го надделяват.</div>
-  <div class="card"><h4>--no-open</h4>не отваря автоматично HTML отчета накрая
-    (за headless/CI). По подразбиране отчетът се отваря в браузъра.</div>
-  <div class="card"><h4>--from STAGE</h4>само за <code>run_pipeline.py</code> — започва от
-    даден етап, напр. <code>--from features</code> прескача scrape&nbsp;+&nbsp;transform.</div>
-</div>
 
-<p style="margin-top:18px"><b>Кой backend се ползва?</b> Решава се по приоритет —
-първото налично печели:</p>
-<ol class="prec">
-  <li><b>Флаг</b> на командата: <code>--local</code> или <code>--s3</code></li>
-  <li><b><code>STORAGE_BACKEND</code></b> от <code>.env</code> или env-променлива (<code>s3</code> | <code>local</code>)</li>
-  <li><b>По подразбиране</b>: <code>s3</code></li>
-</ol>
-<div class="note"><code>.env</code> се зарежда автоматично и е <b>по желание</b> — реалните
-env-променливи имат предимство пред него. Без никаква конфигурация pipeline-ът работи на S3.</div>
+<h3 style="margin-top:24px">Какво бихме подобрили</h3>
+<ul>
+  <li><b>Именуване на скриптовете.</b> Конвенциите не са напълно еднакви между етапите и слоевете
+      (напр. <code>transform_1_day_forecast_local_time.py</code> срещу <code>model_builder_1d.py</code>
+      срещу <code>feature_builder_supply.py</code>). Единна схема —
+      <code>&lt;етап&gt;_&lt;слой&gt;_&lt;хоризонт&gt;</code> — би била по-предвидима и по-лесна за навигация.</li>
+  <li><b>Структурата на S3.</b> Сега <code>data/processed/</code> държи master-таблиците и feature-ите
+      заедно, а резултатите са подредени по хоризонт. По-чисто би било ясно разделяне (master / features)
+      и ключове <b>по слой</b> (<code>data/results/layer_1/…</code>) — по-лесно за навигация и за операции
+      върху един слой.</li>
+  <li><b>Контейнеризация.</b> Docker образ, който фиксира Python и зависимостите (вкл.
+      Playwright/Chromium за IBEX скрейпъра), би дал напълно възпроизводима среда и би улеснил
+      планираните прогони, CI и деплой.</li>
+</ul>
 </section>"""
 
 
@@ -487,20 +474,33 @@ def main() -> int:
     any_figs = False
     # Layer 1 хоризонти първо (в реда на SECTIONS), после Layer 2 (supply), после
     # всякакви други резултатни папки по азбучен ред.
-    known = {h for h, _ in SECTIONS} | {"supply"}
+    l1_horizons = {h for h, _ in SECTIONS}          # 1d, 1week, 15min
+    known = l1_horizons | {"supply"}
     ordered = [h for h, _ in SECTIONS] + ["supply"] + sorted(set(by_horizon) - known)
+    rendered_l1 = False
+    keys_done = False
     for hz in ordered:
         figs = by_horizon.get(hz)
         if not figs:
             continue
+        # Ключови изводи на Layer 1 — след всички L1 хоризонти, преди първата не-L1 секция.
+        if hz not in l1_horizons and rendered_l1 and not keys_done:
+            parts.append(render_layer1_keys())
+            keys_done = True
         any_figs = True
         if hz == "1d":
             block, _ = render_1d(figs)
             parts.append(block)
+            rendered_l1 = True
         elif hz == "supply":
             parts.append(render_layer2(figs))
         else:
             parts.append(render_plain(titles.get(hz, hz), figs, hz))
+            rendered_l1 = True
+
+    # Ако няма не-L1 секции след Layer 1 (напр. само Layer 1), добави изводите накрая.
+    if rendered_l1 and not keys_done:
+        parts.append(render_layer1_keys())
 
     if not any_figs:
         parts.append('<section><p class="empty">Няма резултатни PNG още — '
